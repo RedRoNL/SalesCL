@@ -44,7 +44,9 @@ export type RegisterOutcome =
   | { status: "reused"; companyId: string }
   | { status: "duplicate"; matchedId?: string; reason: string }
   | { status: "excluded"; companyId: string; reasons: string[] }
-  | { status: "capped" };
+  | { status: "capped" }
+  /** Already a candidate in this run (e.g. seen again when deferred work resumes) — not a duplicate prospect. */
+  | { status: "already_in_run"; companyId: string };
 
 const REUSABLE = new Set(["candidate", "needs_research", "researched"]);
 
@@ -73,6 +75,7 @@ export async function registerCandidate(runId: string, input: CandidateInput, ma
       await db.insert(schema.runCandidates).values({ runId, companyId: existing.matchedId, hunter: input.discoveredBy, discoverySourceId: input.discoverySourceId ?? null, priority: input.priority ?? 50, checkpoint: { reused: true } }).onConflictDoNothing();
       return { status: "reused", companyId: existing.matchedId };
     }
+    if (already) return { status: "already_in_run", companyId: existing.matchedId };
     return { status: "duplicate", matchedId: existing.matchedId, reason: `${existing.reason} (${existing.matchedName})` };
   }
   if (maxCandidates != null && (await candidateCapReached(runId, maxCandidates))) return { status: "capped" };
