@@ -34,7 +34,7 @@ async function industryIdOf(code: string | null | undefined) {
 
 /** Deterministic candidates: outbound links to company websites with a usable anchor text. */
 /** Navigation/footer anchors that are never organisation names (seen in live harvests). */
-const NAVIGATION_ANCHOR_RE = /^(©|\(c\)|copyright\b|ga naar\b|naar\b|lees (meer|verder)\b|bekijk\b|meer\b|klik\b|terug\b|volg ons\b|go to\b|read more\b|visit\b)|[»›→]|&[a-z]+;/i;
+const NAVIGATION_ANCHOR_RE = /^(©|\(c\)|copyright\b|ga naar\b|naar\b|lees (meer|verder)\b|bekijk\b|meer\b|klik\b|terug\b|volg ons\b|go to\b|read more\b|visit\b)|^(intranet|extranet|carri[eè]re|vacatures|werken bij|nieuws|news|contact|login|inloggen|mijn [a-z]+|over ons|about( us)?|privacy|cookies?|disclaimer|sitemap|home)$|[»›→]|&[a-z]+;/i;
 function decodeEntities(t: string) {
   return t.replace(/&(rsquo|lsquo|apos);/g, "'").replace(/&(rdquo|ldquo|quot);/g, '"').replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/&raquo;/g, "»").replace(/&laquo;/g, "«").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 }

@@ -156,6 +156,17 @@ export function sizeBand(employees: number | null | undefined): "lt50" | "50-299
 }
 
 /** Best single employee estimate from count or range midpoint. */
+/**
+ * True only when the sourced size is DEFINITELY outside [min, max]: an exact count outside the band, or a range that
+ * does not overlap it. "More than 250" (min only) can still be 300+, so it is not a rejection (live-pilot finding).
+ */
+export function sizeDefinitelyOutside(c: { employeeCount?: number | null; employeeMin?: number | null; employeeMax?: number | null }, bounds: { min: number; max: number }): boolean {
+  if (c.employeeCount != null) return c.employeeCount < bounds.min || c.employeeCount > bounds.max;
+  if (c.employeeMax != null && c.employeeMax < bounds.min) return true;
+  if (c.employeeMin != null && c.employeeMin > bounds.max) return true;
+  return false;
+}
+
 export function employeeEstimate(c: { employeeCount?: number | null; employeeMin?: number | null; employeeMax?: number | null }): number | null {
   if (c.employeeCount != null) return c.employeeCount;
   if (c.employeeMin != null && c.employeeMax != null) return Math.round((c.employeeMin + c.employeeMax) / 2);

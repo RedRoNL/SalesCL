@@ -219,7 +219,9 @@ export class ResearchService {
     const page = await this.retrieve(url);
     if (page.cached) await this.usage(page.provider, "fetch", 0, 0, true);
     const sanitized = sanitizeUntrusted(page.text, 12000);
-    const excerpt = sanitizeUntrusted(page.text, 6000).text;
+    // The stored excerpt must be exactly what the agent was shown, otherwise correct quotes from the second half of a
+    // page fail verification and sourced facts are silently dropped (live-pilot finding). Still bounded (12k chars).
+    const excerpt = sanitized.text;
     const hash = sha(page.text);
     const finalUrl = page.finalUrl || url;
     const db = getDb();

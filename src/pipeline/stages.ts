@@ -10,7 +10,7 @@ import { AwaitingExecutor } from "@/agents/executor";
 import * as S from "@/agents/schemas";
 import { ResearchService } from "@/research/service";
 import { extractDeterministic, quoteFound, NON_COMPANY_DOMAINS, type DeterministicProfile, type ExtractPage, focusExcerpt } from "@/research/extract";
-import { canonicalDomain, normalizeCompanyName, normalizePhoneNL, normalizeLegalForm, employeeEstimate } from "@/domain/normalize";
+import { canonicalDomain, normalizeCompanyName, normalizePhoneNL, normalizeLegalForm, employeeEstimate, sizeDefinitelyOutside } from "@/domain/normalize";
 import { classifyDns, summarizeEvidence, technologyConfidence, validateAgentClaim, CLASS_RANK, type MsTech, type EvidenceClass } from "@/domain/msEvidence";
 import { scoreCompany, potentialScore, templateRationale, DEFAULT_SCORING, type ScoringConfig, type ScoringInput } from "@/domain/scoring";
 import { recommendService, SERVICE_LABELS } from "@/domain/services";
@@ -274,7 +274,7 @@ async function stageExtract(runId: string, companyId: string, research: Research
     if (dup && dup.reason !== "fuzzy_name") throw new StopCandidate(`Duplicaat (${dup.reason}) van ${dup.matchedName}`, "rejected");
   }
   const est = employeeEstimate(after);
-  if (est != null && (est < bounds.min || est > bounds.max)) throw new StopCandidate(`Buiten omvang voor deze run (${est} medewerkers; ${bounds.min}–${bounds.max})`, "rejected");
+  if (est != null && sizeDefinitelyOutside(after, bounds)) throw new StopCandidate(`Buiten omvang voor deze run (${est} medewerkers; ${bounds.min}–${bounds.max})`, "rejected");
   if (authority === "abroad_central") throw new StopCandidate("IT-inkoop gecentraliseerd in het buitenland", "rejected");
 }
 
@@ -379,7 +379,7 @@ async function stageDeep(runId: string, companyId: string, research: ResearchSer
     if (g.purchasingAuthority === "abroad_central" && ok(g.purchasingAuthorityQuote)) throw new StopCandidate("IT-inkoop gecentraliseerd in het buitenland", "rejected");
     c = await getCompany(companyId);
     const est = employeeEstimate(c);
-    if (est != null && (est < bounds.min || est > bounds.max)) throw new StopCandidate(`Buiten omvang voor deze run (${est} medewerkers; ${bounds.min}–${bounds.max})`, "rejected");
+    if (est != null && sizeDefinitelyOutside(c, bounds)) throw new StopCandidate(`Buiten omvang voor deze run (${est} medewerkers; ${bounds.min}–${bounds.max})`, "rejected");
   }
 
   // 3. Microsoft specialist only when screening found no strong Microsoft 365 / Exchange Online evidence.

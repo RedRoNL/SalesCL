@@ -336,3 +336,15 @@ describe("prompt-injection resistance (content handling)", () => {
     expect(sanitizeUntrusted("a".repeat(50000), 1000).truncated).toBe(true);
   });
 });
+
+import { sizeDefinitelyOutside } from "@/domain/normalize";
+describe("size band decisions", () => {
+  const b = { min: 300, max: 5000 };
+  it("rejects only sizes that are definitely outside the band", () => {
+    expect(sizeDefinitelyOutside({ employeeCount: 120 }, b)).toBe(true);
+    expect(sizeDefinitelyOutside({ employeeCount: 800 }, b)).toBe(false);
+    expect(sizeDefinitelyOutside({ employeeMin: 250 }, b)).toBe(false); // "more than 250" may be 300+
+    expect(sizeDefinitelyOutside({ employeeMin: 11, employeeMax: 23 }, b)).toBe(true);
+    expect(sizeDefinitelyOutside({ employeeMin: 6000 }, b)).toBe(true);
+  });
+});

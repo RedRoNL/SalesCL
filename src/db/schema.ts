@@ -377,7 +377,7 @@ export const researchSources = pgTable(
     sourceType: text("source_type").notNull(), // official_site | vacancy | ms_customer_story | news | directory | registry | annual_report | procurement | dns | association | other
     provider: text("provider").notNull(),
     contentHash: text("content_hash"),
-    /** Short excerpt only — never the full page — to minimise stored third-party content. */
+    /** Bounded excerpt (max 12k chars, exactly what agents saw) — never the full page — to minimise stored third-party content. */
     excerpt: text("excerpt"),
     httpStatus: integer("http_status"),
     retrievedAt: ts("retrieved_at").notNull().defaultNow(),
