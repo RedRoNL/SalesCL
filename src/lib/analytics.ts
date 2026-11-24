@@ -258,16 +258,16 @@ export async function dashboardStats() {
   const weekStart = startOfWeekAmsterdam();
   const [c] = (await db.execute(sql`
     select count(*)::int as total,
-      count(*) filter (where status in ('qualified','approved','exported') and updated_at >= ${weekStart})::int as "qualifiedThisWeek",
-      count(*) filter (where last_researched_at >= ${weekStart})::int as "researchedThisWeek",
-      count(*) filter (where status in ('rejected','excluded') and updated_at >= ${weekStart})::int as "rejectedThisWeek",
+      count(*) filter (where status in ('qualified','approved','exported') and updated_at >= ${weekStart.toISOString()}::timestamptz)::int as "qualifiedThisWeek",
+      count(*) filter (where last_researched_at >= ${weekStart.toISOString()}::timestamptz)::int as "researchedThisWeek",
+      count(*) filter (where status in ('rejected','excluded') and updated_at >= ${weekStart.toISOString()}::timestamptz)::int as "rejectedThisWeek",
       count(*) filter (where status = 'exported')::int as exported,
       round(avg(fit_score) filter (where status in ('qualified','approved','exported')))::int as "avgFit"
     from companies where deleted_at is null`)) as unknown as Record<string, number>[];
   const [a] = (await db.execute(sql`select count(*)::int as appointments from appointments`)) as unknown as { appointments: number }[];
   const [costs] = (await db.execute(sql`
-    select (select coalesce(sum(cost_eur),0) from agent_tasks where created_at >= ${weekStart})::float as "aiWeek",
-           (select coalesce(sum(cost_eur),0) from provider_usage where created_at >= ${weekStart})::float as "providersWeek",
+    select (select coalesce(sum(cost_eur),0) from agent_tasks where created_at >= ${weekStart.toISOString()}::timestamptz)::float as "aiWeek",
+           (select coalesce(sum(cost_eur),0) from provider_usage where created_at >= ${weekStart.toISOString()}::timestamptz)::float as "providersWeek",
            (select coalesce(sum(cost_eur),0) from agent_tasks)::float as "aiTotal",
            (select coalesce(sum(cost_eur),0) from provider_usage)::float as "providersTotal"`)) as unknown as Record<string, number>[];
   const [activeRun] = await db.select().from(schema.researchRuns).where(sql`${schema.researchRuns.status} in ('queued','running','paused')`).orderBy(desc(schema.researchRuns.createdAt)).limit(1);
@@ -283,7 +283,7 @@ export async function dashboardStats() {
     appointments: a?.appointments ?? 0,
     conversion: perf.totals,
     revenue: perf.revenue,
-    costs: { ...costs, week: (costs?.aiWeek ?? 0) + (costs?.providersWeek ?? 0), total: totalCost, perQualified: qualifiedTotal[0].n ? totalCost / qualifiedTotal[0].n : null, perAppointment: a?.appointments ? totalCost / a.appointments : null },
+    costs: { aiWeek: costs?.aiWeek ?? 0, providersWeek: costs?.providersWeek ?? 0, aiTotal: costs?.aiTotal ?? 0, providersTotal: costs?.providersTotal ?? 0, week: (costs?.aiWeek ?? 0) + (costs?.providersWeek ?? 0), total: totalCost, perQualified: qualifiedTotal[0].n ? totalCost / qualifiedTotal[0].n : null, perAppointment: a?.appointments ? totalCost / a.appointments : null },
     activeRun: activeRun ?? null,
     agentActivity,
   };
