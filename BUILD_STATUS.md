@@ -1,25 +1,64 @@
 # BUILD STATUS
 
-_Last updated: 2026-11-24 (v2 review). Persistent checklist — update when work is completed or discovered._
+_Last updated: 2026-11-24 (v3: Claude Subscription Mode + live zero-cost pilot). Persistent checklist — update when work is completed or discovered._
 
-## Overall
-The platform is built, reviewed (REVIEW.md) and tested end to end with synthetic data. **It has not yet performed live
-research**: the build environment had no Anthropic/KvK credentials and its network blocks ordinary websites. The three live pilots
-are prepared (Setup → step 10, or `npm run pilot`). Do not treat the system as production-proven until they pass.
+## Overall (v3, Claude Subscription Mode)
+- **Default execution.** AI work runs in native Claude Code sessions (scheduled tasks) on the existing subscription,
+  through the research bridge.
+- **Verified live.** The full pipeline ran on the real web with €0 API cost: discovery, screening, extraction, deep
+  research, Microsoft evidence, scoring and gates.
+- **Not production-proven for volume.** The first zero-cost pilot produced **0 of 10** qualified companies before the
+  subscription's 5-hour usage limit stopped the session. See the pilot results below.
+
+## Zero-cost pilot (2026-11-24, preset "manufacturing", 300–5,000 FTE, run 4a9fd818…)
+
+Executed in this Claude Code session as the subscription executor: `npm run army`, the 11 subagent roles on Sonnet,
+the CSO strategy written by the session itself, native WebSearch, and fetching through the bridge.
+
+| Measurement | Result |
+|---|---|
+| Candidates discovered | 117 (from 13 real sources: FME, NRK, VNCI, AWVN, Chemelot, Rijk Limburg top 10, regiobedrijf, GMV, …) |
+| Qualified (QA- and eligibility-approved) | **0**: shortfall of 10, reported, bar not lowered |
+| Rejected | 36. Of these, 26 were outside 300–5,000 (mostly SMEs from association lists, sizes sourced from annual-account FTE), 2 had no Microsoft environment (Google Workspace), 7 scored below threshold, 1 was a duplicate |
+| Needs more research | 36. Best: fit 61–70 with confidence 45–81 (Attero 757 FTE, Accsys, Allinplast, Azelis, Beekenkamp). Typical gaps: Dutch-only headcount (only group or global counts were sourced), Microsoft 365 only weakly indicated, IT purchasing authority unknown |
+| Failed / not a company | 17. Association acronyms and navigation links from member pages (filters fixed, see REVIEW v3) |
+| Still open when stopped | 28 candidates, 36 parked AI tasks: resumable by the next scheduled start |
+| Verified Microsoft evidence (≥ strongly indicated) | 65 companies (DNS/website, deterministic) |
+| Verified phone numbers | 58 |
+| Sourced employee counts | 45 |
+| Duplicates | `duplicatesDetected` shows 765, which is **wrong**: re-seeing companies when deferred work resumed was counted as a duplicate. Fixed for future runs (`already_in_run`); the real duplicate rejections were 1 |
+| QA rejection rate | n/a: no candidate reached QA |
+| AI tasks | 273 parked: 173 succeeded, 64 failed (mostly non-companies and deliberate retirements), 36 open |
+| Duration | ≈ 4.7 h wall-clock, including fixing the bugs found along the way |
+| Subscription usage | Hit the **5-hour usage limit** once. No switch to paid API happened. The run resumed after the reset, and the user stopped further work to preserve daily limits |
+| Additional API cost | **€0** (no API key configured). Provider cost €0 (no KvK, Brave or Firecrawl) |
+
+**Conclusions:**
+1. The architecture works and is compliant: €0 extra, resumable, checkpointed, and the quality gates held.
+2. Throughput on one seat is the binding constraint. About 270 agent tasks for 117 candidates used up a 5-hour window
+   without reaching 10 qualified. 100 per week is **not** demonstrated on a single seat with free sources only.
+3. The yield problem is size evidence and source mix, not the model.
+   - Association member lists are SME-heavy.
+   - Websites rarely state Dutch headcount.
+   - Highest-impact next steps, in this order:
+     1. KvK API (€6.20/month; gives werkzame personen and legal form in one deterministic call, instead of agent deep
+        research).
+     2. Prioritise ranking and employer sources (AWVN, top-employer lists) over member lists.
+     3. Pre-filter on the free directory FTE (liza.nl-style annual-account counts) before any AI task.
+4. Re-run the pilot after (1)–(3) before deciding on more seats or Paid API Mode.
 
 ## Exact remaining steps (in order)
 | # | Step | Where | Outside the app? |
 |---|---|---|---|
-| 1 | Provision hosting (web + worker containers, PostgreSQL 16 with `pg_trgm`), set `DATABASE_URL`, `APP_URL`, `SESSION_SECRET`, `SECRETS_ENCRYPTION_KEY`, `SETUP_TOKEN`; allow outbound HTTPS to the public web | DEPLOYMENT.md §0–5 | Yes |
-| 2 | `npm run db:migrate`; start web and worker | DEPLOYMENT.md | Yes |
-| 3 | Create an Anthropic API key with a monthly spend limit | console.anthropic.com | Yes |
-| 4 | Register the Entra ID app (redirect URI, client secret, app roles) | Entra admin center | Yes (needs Entra admin) |
-| 5 | Optional: KvK API key (recommended) | developers.kvk.nl | Yes |
-| 6 | Sign in with `SETUP_TOKEN` → complete Setup steps 1–9 (keys, providers + approval, Entra, imports, exclusions, budget, schedule) | /setup | No |
-| 7 | Legal review of the contact-eligibility configuration | Settings → Contactgeschiktheid | Counsel |
-| 8 | Run the three pilots (≈€15 budget each), review /pilots metrics and the lists | Setup → 10, /pilots | No |
-| 9 | Calibrate: funnel thresholds, QA model tier, budgets from measured cost per qualified prospect | Settings | No |
-| 10 | Remove `SETUP_TOKEN`; enable the weekly schedule; click *Start eerste onderzoeksrun* or wait for Monday 08:00 | Setup | Yes / No |
+| 1 | Host the dashboard with HTTPS + PostgreSQL 16 (`pg_trgm`). No worker needed | DEPLOYMENT.md §0 | Yes |
+| 2 | `npm run db:migrate`; set `SESSION_SECRET`, `SECRETS_ENCRYPTION_KEY`, `SETUP_TOKEN`, `APP_URL` | DEPLOYMENT.md | Yes |
+| 3 | Register the Entra ID app | Entra admin center | Yes |
+| 4 | Wizard step 2: Subscription Mode, public URL, generate the bridge token | /setup | No |
+| 5 | claude.ai/code: environment (Limited + dashboard host, network secret, `SALES_ARMY_URL`) and scheduled task (wizard prompt + cron) | SUBSCRIPTION_MODE.md §3 | Yes |
+| 6 | Strongly recommended: KvK API key (approve in Budget) | developers.kvk.nl | Yes |
+| 7 | Imports, exclusions, legal review of contact eligibility | /setup, counsel | Partly |
+| 8 | Re-run the zero-cost pilots and compare yield per subscription window | /pilots | No |
+| 9 | Consider a Team/Enterprise seat for commercial use; add seats only if measured throughput requires it | claude.ai | Yes |
 
 ## v2 checklist (this review)
 - [x] Independent audit with fixes (REVIEW.md: 15 findings)
