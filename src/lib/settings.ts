@@ -1,0 +1,127 @@
+import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { getDb, schema } from "@/db/client";
+
+/** Model tiers: cheap for high-volume extraction, strong for reasoning/QA. */
+export const ModelConfigSchema = z.object({
+  fast: z.string().default("claude-haiku-5-5"),
+  standard: z.string().default("claude-sonnet-5-5"),
+  strong: z.string().default("claude-opus-5-5"),
+  /** Optional per-agent override: agentId -> model id */
+  perAgent: z.record(z.string(), z.string()).default({}),
+  effort: z.enum(["low", "medium", "high"]).default("medium"),
+  usdToEur: z.number().positive().default(0.92),
+});
+
+export const BudgetSchema = z.object({
+  weeklyEur: z.number().nonnegative().default(150),
+  monthlyEur: z.number().nonnegative().default(500),
+  perRunDefaultEur: z.number().nonnegative().default(120),
+  /** Paid third-party subscriptions must be explicitly approved here. */
+  approvedPaidProviders: z.array(z.string()).default([]),
+  firecrawlEurPerCredit: z.number().nonnegative().default(0.0008),
+  kvkEurPerCall: z.number().nonnegative().default(0.02),
+});
+
+export const IcpSchema = z.object({
+  country: z.string().default("NL"),
+  minEmployees: z.number().int().default(50),
+  maxEmployees: z.number().int().default(5000),
+  primaryBand: z.tuple([z.number(), z.number()]).default([300, 2000]),
+  enterpriseBand: z.tuple([z.number(), z.number()]).default([2000, 5000]),
+  growthBand: z.tuple([z.number(), z.number()]).default([50, 300]),
+  /** Max share of the weekly list allowed from the 50–300 band unless shortfall. */
+  growthMaxShare: z.number().min(0).max(1).default(0.15),
+  excludedCategories: z
+    .array(z.string())
+    .default(["cybersecurity_provider", "msp", "it_consultancy", "ms_security_consultancy", "sales_agency", "marketing_agency", "recruitment_agency", "software_startup"]),
+});
+
+export const ScheduleSchema = z.object({
+  enabled: z.boolean().default(true),
+  cron: z.string().default("0 8 * * 1"),
+  timezone: z.string().default("Europe/Amsterdam"),
+  weeklyTarget: z.number().int().min(1).max(500).default(100),
+  candidateMultiplier: z.number().min(1).max(5).default(2.5),
+  maxCandidatesPerRun: z.number().int().default(300),
+});
+
+export const ResearchSchema = z.object({
+  searchProvider: z.enum(["firecrawl", "anthropic_web_search", "none"]).default("firecrawl"),
+  fetchProvider: z.enum(["firecrawl", "http"]).default("http"),
+  dnsProvider: z.enum(["system", "doh"]).default("doh"),
+  registryProvider: z.enum(["none", "kvk"]).default("none"),
+  /** Reuse facts younger than this many days instead of paying for re-research. */
+  factReuseDays: z.number().int().default(90),
+  cacheTtlDays: z.number().int().default(30),
+  maxPagesPerCompany: z.number().int().default(6),
+  requestDelayMs: z.number().int().default(1500),
+  depth: z.enum(["light", "standard", "deep"]).default("standard"),
+});
+
+export const RetentionSchema = z.object({
+  contactRetentionDays: z.number().int().default(730),
+  sourceExcerptRetentionDays: z.number().int().default(730),
+  rejectedCompanyRetentionDays: z.number().int().default(1095),
+  auditLogRetentionDays: z.number().int().default(2555),
+});
+
+export const LearningSchema = z.object({
+  /** Allow the system to adjust industry priorities by ±1 tier without approval. */
+  autoAdjustIndustryPriority: z.boolean().default(true),
+  minSampleForIndicative: z.number().int().default(10),
+  minSampleForSignificant: z.number().int().default(30),
+});
+
+export const EligibilitySchema = z.object({
+  /** Legal forms (normalised) that may be called B2B without prior consent. */
+  eligibleLegalForms: z
+    .array(z.string())
+    .default(["bv", "nv", "stichting", "vereniging", "cooperatie", "owm", "publiekrechtelijk", "gemeente", "overheid", "se"]),
+  /** Natural-person / partnership forms: consent required since 1 July 2026 (Telecommunicatiewet). */
+  restrictedLegalForms: z.array(z.string()).default(["eenmanszaak", "vof", "cv", "maatschap"]),
+  blockMobileNumbers: z.boolean().default(true),
+  reverifyAfterDays: z.number().int().default(180),
+});
+
+export const SettingsSchema = z.object({
+  models: ModelConfigSchema.default(ModelConfigSchema.parse({})),
+  budget: BudgetSchema.default(BudgetSchema.parse({})),
+  icp: IcpSchema.default(IcpSchema.parse({})),
+  schedule: ScheduleSchema.default(ScheduleSchema.parse({})),
+  research: ResearchSchema.default(ResearchSchema.parse({})),
+  retention: RetentionSchema.default(RetentionSchema.parse({})),
+  learning: LearningSchema.default(LearningSchema.parse({})),
+  eligibility: EligibilitySchema.default(EligibilitySchema.parse({})),
+  /** agentId -> list of enabled skill names */
+  agentSkills: z.record(z.string(), z.array(z.string())).default({}),
+});
+
+export type Settings = z.infer<typeof SettingsSchema>;
+export type SettingsKey = keyof Settings;
+
+export const DEFAULT_SETTINGS: Settings = SettingsSchema.parse({});
+
+export async function getSettings(): Promise<Settings> {
+  const rows = await getDb().select().from(schema.systemSettings);
+  const raw: Record<string, unknown> = {};
+  for (const r of rows) raw[r.key] = r.value;
+  const parsed = SettingsSchema.safeParse(raw);
+  return parsed.success ? parsed.data : DEFAULT_SETTINGS;
+}
+
+export async function updateSetting<K extends SettingsKey>(key: K, value: unknown, actor: string): Promise<Settings[K]> {
+  const shape = SettingsSchema.shape[key];
+  const parsed = shape.parse(value) as Settings[K];
+  const db = getDb();
+  await db
+    .insert(schema.systemSettings)
+    .values({ key, value: parsed as object, updatedBy: actor })
+    .onConflictDoUpdate({ target: schema.systemSettings.key, set: { value: parsed as object, updatedBy: actor, updatedAt: new Date() } });
+  return parsed;
+}
+
+export async function getSettingRow(key: SettingsKey) {
+  const [row] = await getDb().select().from(schema.systemSettings).where(eq(schema.systemSettings.key, key));
+  return row;
+}
