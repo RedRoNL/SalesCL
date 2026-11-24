@@ -15,7 +15,7 @@ import { runCandidateCounts } from "@/pipeline/candidates";
 import { isoWeek } from "@/domain/normalize";
 import { handlers } from "@/worker/handlers";
 import { workerStatus } from "@/lib/integrations";
-import { startPilot, PILOT_PRESETS, type PilotKey } from "@/lib/pilots";
+import { startPilot, pilotMetrics, PILOT_PRESETS, type PilotKey } from "@/lib/pilots";
 
 /**
  * Research bridge: the narrowly scoped interface through which a native Claude Code session
@@ -219,7 +219,8 @@ export async function bridgeStatus(runId?: string) {
   const db = getDb();
   const work = await db.select({ status: schema.runWork.status, n: sql<number>`count(*)::int` }).from(schema.runWork).where(eq(schema.runWork.runId, r.id)).groupBy(schema.runWork.status);
   const [list] = await db.select({ id: schema.prospectLists.id, status: schema.prospectLists.status, shortfall: schema.prospectLists.shortfall }).from(schema.prospectLists).where(eq(schema.prospectLists.runId, r.id));
-  return { run: r, candidates: await runCandidateCounts(r.id), work: Object.fromEntries(work.map((w) => [w.status, w.n])), awaiting: await awaitingSummary(r.id), list: list ?? null };
+  const metrics = r.kind === "pilot" ? await pilotMetrics(r.id) : null;
+  return { run: r, candidates: await runCandidateCounts(r.id), work: Object.fromEntries(work.map((w) => [w.status, w.n])), awaiting: await awaitingSummary(r.id), list: list ?? null, metrics };
 }
 
 export { JOBS };
