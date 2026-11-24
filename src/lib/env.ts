@@ -41,13 +41,5 @@ export function resetEnvCache() {
   cached = undefined;
 }
 
-export function integrationStatus() {
-  const e = env();
-  return {
-    anthropic: Boolean(e.ANTHROPIC_API_KEY),
-    firecrawl: Boolean(e.FIRECRAWL_API_KEY),
-    kvk: Boolean(e.KVK_API_KEY),
-    entra: Boolean(e.ENTRA_TENANT_ID && e.ENTRA_CLIENT_ID && e.ENTRA_CLIENT_SECRET),
-    sessionSecret: Boolean(e.SESSION_SECRET),
-  };
-}
+/** @deprecated use integrationStatus() from @/lib/secrets (resolves env + encrypted DB secrets). */
+export {};

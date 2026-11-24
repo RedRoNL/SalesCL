@@ -116,6 +116,10 @@ export async function requeuePending(runId: string, includeFailed = false) {
     await (await getQueue()).send(JOBS.orchestrate, { runId }, { singletonKey: `${runId}:resume:${Date.now()}` });
     return 1;
   }
+  // Re-enqueue unfinished discovery work units.
+  if (includeFailed) await db.update(schema.runWork).set({ status: "pending", error: null }).where(and(eq(schema.runWork.runId, runId), eq(schema.runWork.status, "failed")));
+  const pendingWork = await db.select().from(schema.runWork).where(and(eq(schema.runWork.runId, runId), eq(schema.runWork.status, "pending")));
+  for (const w of pendingWork) await (await getQueue()).send(w.kind === "harvest" ? JOBS.harvest : w.kind === "scout" ? JOBS.scout : JOBS.hunt, { runId, workId: w.id }, { singletonKey: `${w.id}:${Date.now()}` });
   const statuses = includeFailed ? ["pending", "in_progress", "failed"] : ["pending", "in_progress"];
   if (includeFailed) {
     const reset = await db.update(schema.runCandidates).set({ status: "pending", lastError: null, attempts: 0 }).where(and(eq(schema.runCandidates.runId, runId), eq(schema.runCandidates.status, "failed"))).returning({ id: schema.runCandidates.id });
@@ -127,8 +131,8 @@ export async function requeuePending(runId: string, includeFailed = false) {
   const rows = await db.select({ companyId: schema.runCandidates.companyId }).from(schema.runCandidates).where(and(eq(schema.runCandidates.runId, runId), inArray(schema.runCandidates.status, statuses)));
   const q = await getQueue();
   for (const r of rows) await q.send(JOBS.candidate, { runId, companyId: r.companyId }, { singletonKey: `${runId}:${r.companyId}:${Date.now()}` });
-  if (!rows.length) await q.send(JOBS.finalize, { runId }, { singletonKey: `${runId}:finalize` });
-  return rows.length;
+  if (!rows.length) await q.send(JOBS.finalize, { runId }, { singletonKey: `${runId}:advance` });
+  return rows.length + pendingWork.length;
 }
 
 /** Watchdog: runs with no heartbeat for 30 min are considered interrupted and recovered. */

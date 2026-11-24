@@ -19,7 +19,8 @@ export const BudgetSchema = z.object({
   perRunDefaultEur: z.number().nonnegative().default(120),
   /** Paid third-party subscriptions must be explicitly approved here. */
   approvedPaidProviders: z.array(z.string()).default([]),
-  firecrawlEurPerCredit: z.number().nonnegative().default(0.0008),
+  firecrawlEurPerCredit: z.number().nonnegative().default(0.0035),
+  braveEurPerQuery: z.number().nonnegative().default(0.0047),
   kvkEurPerCall: z.number().nonnegative().default(0.02),
 });
 
@@ -47,8 +48,22 @@ export const ScheduleSchema = z.object({
 });
 
 export const ResearchSchema = z.object({
-  searchProvider: z.enum(["firecrawl", "anthropic_web_search", "none"]).default("firecrawl"),
+  /** Default needs no extra subscription (uses the Anthropic account). Brave is the cheapest high-volume option. */
+  searchProvider: z.enum(["anthropic_web_search", "brave", "firecrawl", "none"]).default("anthropic_web_search"),
   fetchProvider: z.enum(["firecrawl", "http"]).default("http"),
+  /** Use Firecrawl only to render JavaScript-only pages (never to get past 401/403/CAPTCHA). */
+  firecrawlRenderFallback: z.boolean().default(false),
+  /** Pages fetched per company during the free screening stage (home + subpages). */
+  screenPages: z.number().int().min(1).max(8).default(5),
+  /** Minimum prescreen potential to spend money on deeper research. */
+  minScreenScoreForExtraction: z.number().int().min(0).max(100).default(45),
+  /** Minimum preliminary fit to activate the Buying Signal Analyst. */
+  signalsMinFit: z.number().int().min(0).max(100).default(68),
+  /** Stop expensive research once qualified ≥ target × this factor (remaining candidates are kept as reserve). */
+  targetBufferFactor: z.number().min(1).max(2).default(1.15),
+  /** Share of harvest capacity reserved for new/unproven discovery sources (exploration). */
+  explorationShare: z.number().min(0).max(1).default(0.25),
+  maxPagesPerSource: z.number().int().min(1).max(20).default(6),
   dnsProvider: z.enum(["system", "doh"]).default("doh"),
   registryProvider: z.enum(["none", "kvk"]).default("none"),
   /** Reuse facts younger than this many days instead of paying for re-research. */
@@ -84,6 +99,17 @@ export const EligibilitySchema = z.object({
   reverifyAfterDays: z.number().int().default(180),
 });
 
+export const IntegrationsSchema = z.object({
+  entraTenantId: z.string().default(""),
+  entraClientId: z.string().default(""),
+  entraAdminGroupId: z.string().default(""),
+  entraAnalystGroupId: z.string().default(""),
+  /** Optional, off by default: query Microsoft's public OpenID metadata to see whether a domain belongs to an Entra tenant (no traffic to the prospect). */
+  tenantDiscovery: z.boolean().default(false),
+  /** Public URL used to validate outbound web access in the wizard. */
+  connectivityTestUrl: z.string().default("https://www.kvk.nl/"),
+});
+
 export const SettingsSchema = z.object({
   models: ModelConfigSchema.default(ModelConfigSchema.parse({})),
   budget: BudgetSchema.default(BudgetSchema.parse({})),
@@ -95,6 +121,7 @@ export const SettingsSchema = z.object({
   eligibility: EligibilitySchema.default(EligibilitySchema.parse({})),
   /** agentId -> list of enabled skill names */
   agentSkills: z.record(z.string(), z.array(z.string())).default({}),
+  integrations: IntegrationsSchema.default(IntegrationsSchema.parse({})),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

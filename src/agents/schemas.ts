@@ -32,6 +32,7 @@ export const WeeklyPlanInput = z.object({
   performance: z.unknown(),
   marketMap: z.unknown(),
   previousRuns: z.unknown(),
+  sourceStats: z.unknown().optional(),
   constraints: z.object({ industries: z.array(z.string()).optional(), sizeBand: z.tuple([z.number(), z.number()]).optional() }).optional(),
 });
 export const WeeklyPlanOutput = z.object({
@@ -62,7 +63,6 @@ export const DiscoveryInput = z.object({
   quota: z.number().int(),
   searchThemes: z.array(z.string()),
   previousQueries: z.array(z.string()),
-  knownCompanyNames: z.array(z.string()).describe("Reeds bekend — niet opnieuw aandragen"),
 });
 const CandidateSchema = z.object({
   name: z.string().min(2).max(200),
@@ -217,4 +217,92 @@ export const ChatOutput = z.object({
   reply: z.string().min(1).max(12000).describe("Antwoord in het Nederlands (markdown toegestaan)"),
   findings: z.array(z.object({ statement: z.string().max(600), sourceId: sourceRef })).max(30),
   recommendations: z.array(z.string().max(600)).max(10),
+});
+
+
+// ── Discovery: source scouting & list extraction ──
+export const SOURCE_TYPES = [
+  "association", "trade_fair", "ranking", "directory", "business_park", "publication", "regional_network", "group_structure",
+  "annual_report", "vacancy", "ms_customer_reference", "partner_reference", "procurement", "register",
+] as const;
+export const ScoutInput = z.object({
+  industry: z.string(),
+  industryName: z.string(),
+  existingSources: z.array(z.object({ name: z.string(), url: z.string().nullable(), query: z.string().nullable(), type: z.string(), qualified: z.number(), uniqueNew: z.number() })).max(80),
+  wantedTypes: z.array(z.string()),
+});
+export const ScoutOutput = z.object({
+  sources: z
+    .array(z.object({
+      name: z.string().min(2).max(200),
+      sourceType: z.enum(SOURCE_TYPES),
+      url: z.string().url().max(500).nullable().describe("Pagina met een lijst organisaties (ledenlijst, exposanten, ranking…), door jou opgehaald"),
+      query: z.string().max(200).nullable().describe("Of: een herbruikbare zoekopdracht; gebruik {sector} als plaatshouder"),
+      rationale: z.string().max(400),
+    }))
+    .max(12),
+  notes: z.string().max(1000),
+});
+
+export const ListExtractInput = z.object({ sourceType: z.string(), industryName: z.string().nullable(), pageUrl: z.string(), page: z.string() });
+export const ListExtractOutput = z.object({
+  companies: z
+    .array(z.object({
+      name: z.string().min(2).max(160).describe("Exact zoals op de pagina geschreven"),
+      website: z.string().max(300).nullable(),
+      city: z.string().max(80).nullable(),
+      role: z.enum(["member", "exhibitor", "customer", "employer", "subsidiary", "ranked", "buyer", "listed"]),
+    }))
+    .max(150),
+  isCompanyList: z.boolean().describe("Bevat de pagina werkelijk een lijst/verwijzingen naar organisaties?"),
+});
+
+// ── Company Research: one-shot extraction from already retrieved pages (cheap model, no tools) ──
+const Quoted = <T extends z.ZodType>(v: T) => z.object({ value: v, sourceId: z.string().uuid(), quote: z.string().min(3).max(400) }).nullable();
+export const ExtractProfileInput = z.object({ companyId: z.string().uuid(), name: z.string(), domain: z.string().nullable(), industryHint: z.string().nullable(), deterministic: z.unknown(), pages: z.array(z.object({ sourceId: z.string().uuid(), kind: z.string(), url: z.string(), content: z.string() })) });
+export const ExtractProfileOutput = z.object({
+  officialName: z.string().min(2).max(200),
+  tradingName: z.string().max(200).nullable(),
+  industryCode: z.enum(INDUSTRY_CODES),
+  businessCategory: z.enum(BUSINESS_CATEGORIES),
+  subIndustry: z.string().max(120).nullable(),
+  hqCity: z.string().max(80).nullable(),
+  hqCountry: z.string().max(60).nullable(),
+  employees: z.object({ count: z.number().int().positive().nullable(), min: z.number().int().positive().nullable(), max: z.number().int().positive().nullable(), sourceId: z.string().uuid(), quote: z.string().min(3).max(400) }).nullable(),
+  group: z.object({ name: z.string().max(200), domain: z.string().max(200).nullable(), hqCountry: z.string().max(60).nullable(), sourceId: z.string().uuid(), quote: z.string().min(3).max(400) }).nullable(),
+  purchasingAuthority: z.enum(["nl_independent", "nl_group_hq", "nl_local_it", "abroad_central", "unknown"]),
+  purchasingAuthorityQuote: z.string().max(400).nullable(),
+  legalForm: Quoted(z.string().max(60)),
+  kvkNumber: Quoted(z.string().regex(/^\d{8}$/)),
+  compliance: z.object({ nis2: z.enum(["essential", "important"]).nullable(), dora: z.boolean(), sensitiveData: z.boolean(), operationalTechnology: z.boolean(), certificationsOrRegulator: z.boolean(), rationale: z.string().max(600) }),
+  msClaims: z.array(z.object({ technology: z.enum(MS_TECHNOLOGIES as [string, ...string[]]), classification: z.enum(["confirmed", "strongly_indicated", "weakly_indicated"]), sourceId: z.string().uuid(), quote: z.string().min(3).max(400) })).max(20),
+  signals: z.array(z.object({ signalType: z.enum(SIGNAL_TYPES), title: z.string().max(200), explanation: z.string().max(500), relevance: z.enum(["high", "medium", "low"]), signalDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), sourceId: z.string().uuid(), quote: z.string().min(3).max(400) })).max(8),
+  decisionMakerRoles: z.array(z.object({ roleTitle: z.string().max(120), roleCategory: z.enum(["cio", "it_manager", "ciso", "security_officer", "cto", "cfo", "ceo", "other"]), fullName: z.string().max(120).nullable(), sourceId: z.string().uuid(), quote: z.string().min(3).max(400) })).max(4),
+  unknowns: z.array(z.string().max(120)).max(12),
+  injectionAttemptsObserved: z.array(z.string().max(200)).max(5),
+});
+
+// ── Company Research: targeted gap filling (agent with tools, only for promising candidates) ──
+export const GapFillInput = z.object({ companyId: z.string().uuid(), name: z.string(), website: z.string().nullable(), gaps: z.array(z.string()), knownSources: z.array(z.object({ sourceId: z.string(), url: z.string(), type: z.string() })) });
+export const GapFillOutput = z.object({
+  employees: z.object({ count: z.number().int().positive().nullable(), min: z.number().int().positive().nullable(), max: z.number().int().positive().nullable(), sourceId: z.string().uuid(), quote: z.string().min(3).max(400) }).nullable(),
+  legalForm: Quoted(z.string().max(60)),
+  kvkNumber: Quoted(z.string().regex(/^\d{8}$/)),
+  phone: Quoted(z.string().max(40)),
+  purchasingAuthority: z.enum(["nl_independent", "nl_group_hq", "nl_local_it", "abroad_central", "unknown"]),
+  purchasingAuthorityQuote: z.object({ sourceId: z.string().uuid(), quote: z.string().min(3).max(400) }).nullable(),
+  group: z.object({ name: z.string().max(200), domain: z.string().max(200).nullable(), hqCountry: z.string().max(60).nullable(), sourceId: z.string().uuid(), quote: z.string().min(3).max(400) }).nullable(),
+  stillUnknown: z.array(z.string().max(120)).max(10),
+});
+
+// ── Lead Qualification: batch rationale for the final list ──
+export const RationaleBatchInput = z.object({ companies: z.array(z.object({ companyId: z.string().uuid(), name: z.string(), facts: z.unknown(), score: z.unknown(), ruleBasedService: z.string() })).max(20) });
+export const RationaleBatchOutput = z.object({
+  items: z.array(z.object({
+    companyId: z.string().uuid(),
+    rationale: z.string().min(20).max(700),
+    recommendedService: z.enum(SERVICES),
+    serviceReason: z.string().max(300),
+    recurringPotential: z.enum(["high", "medium", "low", "unknown"]),
+  })).max(20),
 });

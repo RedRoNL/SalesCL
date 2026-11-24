@@ -3,6 +3,9 @@ import { PgBoss } from "pg-boss";
 /** Persistent job names. */
 export const JOBS = {
   orchestrate: "run-orchestrate",
+  harvest: "run-harvest",
+  scout: "run-scout",
+  hunt: "run-hunt",
   candidate: "run-candidate",
   finalize: "run-finalize",
   weekly: "weekly-trigger",
@@ -18,6 +21,8 @@ export interface SendOpts {
   retryLimit?: number;
   retryDelay?: number;
   startAfter?: number;
+  /** Higher = sooner (pg-boss priority). Candidate jobs use source yield / screen score. */
+  priority?: number;
 }
 export interface JobQueue {
   send(name: JobName, data: object, opts?: SendOpts): Promise<string | null>;
@@ -27,7 +32,7 @@ export interface JobQueue {
 export class PgBossQueue implements JobQueue {
   constructor(public boss: PgBoss) {}
   async send(name: JobName, data: object, opts: SendOpts = {}) {
-    return this.boss.send(name, data, { retryLimit: opts.retryLimit ?? 3, retryDelay: opts.retryDelay ?? 30, retryBackoff: true, singletonKey: opts.singletonKey, startAfter: opts.startAfter, expireInSeconds: 60 * 60 });
+    return this.boss.send(name, data, { retryLimit: opts.retryLimit ?? 3, retryDelay: opts.retryDelay ?? 30, retryBackoff: true, singletonKey: opts.singletonKey, startAfter: opts.startAfter, priority: opts.priority, expireInSeconds: 60 * 60 });
   }
 }
 

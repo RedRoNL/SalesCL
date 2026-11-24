@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     const { payload } = await jwtVerify(tx, secret);
     const callbackUrl = new URL(req.nextUrl.pathname + req.nextUrl.search, base);
     const id = await completeAuthorization(callbackUrl, String(payload.codeVerifier), String(payload.state), String(payload.nonce));
-    const user = await upsertUser({ email: id.email, name: id.name, entraObjectId: id.oid, role: roleFromEntra(id) });
+    const user = await upsertUser({ email: id.email, name: id.name, entraObjectId: id.oid, role: await roleFromEntra(id) });
     if (!user.active) throw new Error("user disabled");
     await audit({ actorType: "user", actorId: user.id, action: "auth.login", details: { method: "entra" } });
     const res = NextResponse.redirect(new URL("/", base));

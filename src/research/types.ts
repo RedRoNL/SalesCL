@@ -12,12 +12,18 @@ export interface SearchProvider {
   search(query: string, opts?: { limit?: number; country?: string; includeDomains?: string[] }): Promise<{ results: SearchResult[]; units: number }>;
 }
 
+export interface PageLink {
+  href: string;
+  text: string;
+}
 export interface FetchedPage {
   url: string;
   finalUrl: string;
   status: number;
   title: string | null;
   text: string;
+  /** Absolute links found on the page (for deterministic subpage/list discovery). */
+  links?: PageLink[];
 }
 export interface FetchProvider {
   readonly name: string;
@@ -29,6 +35,9 @@ export interface DnsProvider {
   readonly name: string;
   snapshot(domain: string): Promise<DnsSnapshot>;
 }
+
+/** Thin/JS-only page (e.g. SPA shell) — the only case where a rendering fallback is allowed. */
+export class ThinContentError extends Error {}
 
 export interface RegistryRecord {
   kvkNumber: string;

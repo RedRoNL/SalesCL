@@ -1,46 +1,37 @@
-import { and, eq, desc, inArray, sql } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull, sql, notInArray } from "drizzle-orm";
 import { getDb, schema } from "@/db/client";
 import { getSettings } from "@/lib/settings";
 import { audit } from "@/lib/audit";
-import { BudgetExceededError } from "@/lib/budget";
+import { BudgetExceededError, spendSince } from "@/lib/budget";
 import { commercialPerformance, marketMap, effectiveIndustryTiers, generateRecommendations } from "@/lib/analytics";
 import { runAgent } from "@/agents/runtime";
 import * as S from "@/agents/schemas";
 import type { AgentId } from "@/agents/types";
 import { ResearchService } from "@/research/service";
 import { isoWeek, employeeEstimate, sizeBand } from "@/domain/normalize";
+import { SERVICES } from "@/domain/services";
+import { sourceStats, selectSources } from "@/discovery/sources";
+import { openWorkCount } from "@/discovery/work";
 import { buildCapabilities } from "./capabilities";
-import { loadIdentityIndex, registerCandidate, openCandidateCount, runCandidateCounts } from "./candidates";
+import { registerCandidate, openCandidateCount, runCandidateCounts, qualifiedCount } from "./candidates";
 import { getRun, setRunStatus, heartbeat, bumpStat, pauseRun, runStatusSummary, type RunParams } from "./runs";
+import { buildDossier } from "./dossier";
 import { getQueue, JOBS } from "./queue";
 
 type Plan = import("zod").infer<typeof S.WeeklyPlanOutput>;
 
-/** Simple concurrency limiter for parallel agent tasks. */
-async function pool<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
-  const out: PromiseSettledResult<R>[] = new Array(items.length);
-  let i = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length) {
-      const idx = i++;
-      try {
-        out[idx] = { status: "fulfilled", value: await fn(items[idx]) };
-      } catch (e) {
-        out[idx] = { status: "rejected", reason: e };
-      }
-    }
-  });
-  await Promise.all(workers);
-  return out;
+/** Average new candidates a harvest produced historically (fallback 12). */
+function expectedYield(stats: Awaited<ReturnType<typeof sourceStats>>): number {
+  const harvested = stats.filter((s) => s.harvestCount > 0);
+  if (!harvested.length) return 12;
+  return Math.max(4, Math.round(harvested.reduce((a, s) => a + s.uniqueNew / s.harvestCount, 0) / harvested.length));
 }
 
-const HUNTER: Record<"enterprise" | "midmarket" | "growth", AgentId> = { enterprise: "enterprise_hunter", midmarket: "midmarket_hunter", growth: "growth_market_hunter" };
-
 /**
- * Stage 1–4 of the weekly pipeline, executed as a durable job:
- * strategy (CSO) → discovery (Market Intelligence + Hunters, in parallel) →
- * preliminary filtering & deduplication (code) → fan-out of candidate jobs.
- * Each stage checkpoints on the run row so an interrupted job resumes.
+ * Plan the run: CSO strategy (1 model call), then deterministic work planning against
+ * the discovery-source database. Work units (harvest / scout / hunt) run in parallel in
+ * the worker and stream candidates into the research funnel immediately — discovery and
+ * research overlap instead of waiting for each other.
  */
 export async function orchestrateRun(runId: string) {
   const db = getDb();
@@ -49,24 +40,22 @@ export async function orchestrateRun(runId: string) {
   await setRunStatus(runId, "running");
   const params = run.params as RunParams;
   const settings = await getSettings();
-  const research = await ResearchService.create({ runId });
   const q = await getQueue();
 
   try {
-    // ── Company-specific research: skip strategy/discovery.
     if (run.kind === "company") {
-      const idx = await loadIdentityIndex();
-      const r = await registerCandidate(runId, { name: params.companyName ?? "Onbekend", website: params.companyWebsite ?? null, discoveredBy: "user" }, idx);
+      const r = await registerCandidate(runId, { name: params.companyName ?? "Onbekend", website: params.companyWebsite ?? null, discoveredBy: "user" });
       await heartbeat(runId, "research");
       if (r.status === "new" || r.status === "reused") await q.send(JOBS.candidate, { runId, companyId: r.companyId }, { singletonKey: `${runId}:${r.companyId}` });
       else {
-        await db.update(schema.researchRuns).set({ error: r.status === "excluded" ? `Uitgesloten: ${r.reasons.join("; ")}` : `Duplicaat: ${"reason" in r ? r.reason : ""}` }).where(eq(schema.researchRuns.id, runId));
-        await q.send(JOBS.finalize, { runId }, { singletonKey: `${runId}:finalize` });
+        await db.update(schema.researchRuns).set({ error: r.status === "excluded" ? `Uitgesloten: ${r.reasons.join("; ")}` : r.status === "duplicate" ? `Duplicaat: ${r.reason}` : "Niet geregistreerd" }).where(eq(schema.researchRuns.id, runId));
+        await q.send(JOBS.finalize, { runId }, { singletonKey: `${runId}:advance` });
       }
       return;
     }
 
-    // ── Stage 1: strategy (checkpointed).
+    const stats = await sourceStats();
+    // ── Strategy (checkpointed).
     let plan = run.strategy as Plan | null;
     if (!plan) {
       await heartbeat(runId, "strategy");
@@ -74,105 +63,125 @@ export async function orchestrateRun(runId: string) {
       const { output } = await runAgent<typeof S.WeeklyPlanOutput>("chief_sales_officer", "plan_week", {
         isoWeek: isoWeek(new Date(), settings.schedule.timezone), target: params.target,
         performance: { totals: perf.totals, byIndustry: perf.byIndustry, bySize: perf.bySize, byScoreBand: perf.byScoreBand, outcomeDistribution: perf.outcomeDistribution },
-        marketMap: map.industries.map((i) => ({ code: i.code, tier: i.effectiveTier, discovered: i.discovered, qualified: i.qualified, appointments: i.appointments, exhaustion: i.exhaustionEstimate })),
+        marketMap: map.industries.map((i) => ({ code: i.code, tier: i.effectiveTier, discovered: i.discovered, qualified: i.qualified, appointments: i.appointments })),
         previousRuns: prev,
+        sourceStats: stats.filter((s) => s.harvestCount > 0).sort((a, b) => b.priority - a.priority).slice(0, 25).map((s) => ({ name: s.name, type: s.sourceType, industries: s.industryCodes, uniqueNew: s.uniqueNew, qualified: s.qualified, priority: s.priority, status: s.status })),
         constraints: { industries: params.industries, sizeBand: params.minEmployees || params.maxEmployees ? [params.minEmployees ?? settings.icp.minEmployees, params.maxEmployees ?? settings.icp.maxEmployees] : undefined },
-      }, { runId, research, capabilities: buildCapabilities() });
-      // Enforce boundaries in code: no excluded sectors, respect user constraints.
+      }, { runId, capabilities: buildCapabilities() });
       const tiers = await effectiveIndustryTiers();
       output.industries = output.industries.filter((i) => (tiers.get(i.code)?.tier ?? 0) > 0 && (!params.industries?.length || params.industries.includes(i.code)));
       if (!output.industries.length && params.industries?.length)
         output.industries = params.industries.filter((c) => (tiers.get(c)?.tier ?? 0) > 0).map((code) => ({ code: code as Plan["industries"][number]["code"], quota: Math.ceil((params.target * settings.schedule.candidateMultiplier) / params.industries!.length), rationale: "Door gebruiker opgegeven sector", sizeFocus: "midmarket" as const }));
       plan = output;
       const [last] = await db.select().from(schema.strategies).orderBy(desc(schema.strategies.version)).limit(1);
-      const prevContent = (last?.content as Record<string, unknown>) ?? {};
-      await db.insert(schema.strategies).values({ version: (last?.version ?? 0) + 1, content: { ...prevContent, weeklyPlan: plan }, createdByAgent: "chief_sales_officer", runId, approved: true, approvedBy: "policy:within_boundaries" });
+      await db.insert(schema.strategies).values({ version: (last?.version ?? 0) + 1, content: { ...((last?.content as object) ?? {}), weeklyPlan: plan }, createdByAgent: "chief_sales_officer", runId, approved: true, approvedBy: "policy:within_boundaries" });
       await db.update(schema.researchRuns).set({ strategy: plan }).where(eq(schema.researchRuns.id, runId));
     }
 
-    // ── Stage 2–4: discovery, filtering, deduplication.
+    // ── Reuse first: reserve candidates from earlier runs (already screened, never paid for twice).
     await heartbeat(runId, "discovery");
-    const maxCandidates = Math.min(settings.schedule.maxCandidatesPerRun, Math.ceil(params.target * settings.schedule.candidateMultiplier));
-    const done = new Set(((run.stats as Record<string, unknown>)?.discoveryDone as string[] | undefined) ?? []);
-    const idx = await loadIdentityIndex();
-    const tiers = await effectiveIndustryTiers();
-    const bands = { enterprise: settings.icp.enterpriseBand, midmarket: settings.icp.primaryBand, growth: settings.icp.growthBand } as const;
+    const reused = await seedFromReserve(runId, plan.industries.map((i) => i.code), Math.ceil(params.target * 0.6));
+    if (reused) await bumpStat(runId, "reserveReused", reused);
 
-    const tasks = plan.industries
-      .filter((i) => !done.has(`${i.code}:${i.sizeFocus}`))
-      .filter((i) => i.sizeFocus !== "growth" || plan!.hunterAllocation.growth > 0);
-
-    for (let pass = 0; pass < 2; pass++) {
-      const registeredSoFar = (await runCandidateCounts(runId));
-      const total = Object.values(registeredSoFar).reduce((a, b) => a + b, 0);
-      if (total >= maxCandidates) break;
-      const work = pass === 0 ? tasks : plan.industries.filter((i) => i.sizeFocus === "midmarket").slice(0, 3);
-      if (!work.length) break;
-      await pool(work, 3, async (ind) => {
-        const current = await getRun(runId);
-        if (current?.status !== "running") return;
-        const segs = await db.select().from(schema.marketSegments).where(eq(schema.marketSegments.industryId, tiers.get(ind.code)?.id ?? -1));
-        const agentId: AgentId = segs.length === 0 && pass === 0 ? "market_intelligence_director" : HUNTER[ind.sizeFocus];
-        const taskType = agentId === "market_intelligence_director" ? "discover_pools" : "hunt";
-        const known = idx.identities.filter((i) => i.name).slice(-300).map((i) => i.name);
-        const { output } = await runAgent<typeof S.DiscoveryOutput>(agentId, taskType, {
-          industry: ind.code, industryName: tiers.get(ind.code)?.nameNl ?? ind.code, sizeBand: bands[ind.sizeFocus], quota: ind.quota,
-          searchThemes: plan!.searchThemes, previousQueries: segs.flatMap((s) => s.queriesUsed ?? []).slice(-60), knownCompanyNames: known,
-        }, { runId, research, capabilities: buildCapabilities() });
-        let newCount = 0;
-        for (const cand of output.candidates) {
-          const counts = await runCandidateCounts(runId);
-          if (Object.values(counts).reduce((a, b) => a + b, 0) >= maxCandidates) break;
-          const r = await registerCandidate(runId, { ...cand, discoveredBy: agentId }, idx);
-          await bumpStat(runId, `discovery_${r.status}`);
-          if (r.status === "new" || r.status === "reused") newCount++;
-          if (r.status === "excluded") await db.update(schema.companies).set({ industryId: tiers.get(ind.code)?.id ?? null }).where(eq(schema.companies.id, r.companyId));
-          if (r.status === "new") await db.update(schema.companies).set({ industryId: tiers.get(ind.code)?.id ?? null, assignedAgent: agentId }).where(eq(schema.companies.id, r.companyId));
-        }
-        await db.insert(schema.marketSegments).values({
-          industryId: tiers.get(ind.code)?.id ?? null, sizeBand: ind.sizeFocus, description: output.notes.slice(0, 1000),
-          sourcesUsed: output.poolsUsed.map((p) => `${p.name}${p.url ? ` (${p.url})` : ""} [${p.usefulness}]`), queriesUsed: output.queriesUsed,
-          candidatesFound: newCount, exhaustionEstimate: output.exhaustionEstimate, lastResearchedAt: new Date(),
-        });
-        done.add(`${ind.code}:${ind.sizeFocus}`);
-        await db.update(schema.researchRuns).set({ stats: sql`jsonb_set(coalesce(${schema.researchRuns.stats}, '{}'::jsonb), '{discoveryDone}', ${JSON.stringify([...done])}::jsonb)` }).where(eq(schema.researchRuns.id, runId));
-        await heartbeat(runId);
-      }).then((results) => {
-        const budgetErr = results.find((r) => r.status === "rejected" && r.reason instanceof BudgetExceededError);
-        if (budgetErr && budgetErr.status === "rejected") throw budgetErr.reason;
-        for (const r of results) if (r.status === "rejected") console.error(`[run ${runId}] discovery task failed:`, r.reason?.message ?? r.reason);
-      });
+    // ── Deterministic work planning against the source database.
+    const existingWork = await db.select({ id: schema.runWork.id }).from(schema.runWork).where(eq(schema.runWork.runId, runId));
+    if (!existingWork.length) {
+      const perHarvest = expectedYield(stats);
+      const units: (typeof schema.runWork.$inferInsert)[] = [];
+      const plannedPages = new Set<string>(); // a page source is harvested at most once per run, whatever its industries
+      for (const ind of plan.industries) {
+        const slots = Math.min(8, Math.max(2, Math.ceil(ind.quota / perHarvest)));
+        const picks = selectSources(stats.filter((s) => !(s.kind === "page" && plannedPages.has(s.id))), ind.code, slots, settings.research.explorationShare);
+        for (const p of picks) if (stats.find((s) => s.id === p.sourceId)?.kind === "page") plannedPages.add(p.sourceId);
+        for (const p of picks) units.push({ runId, kind: "harvest", sourceId: p.sourceId, params: { industry: ind.code, exploration: p.exploration } });
+        const productive = stats.filter((s) => s.industryCodes.includes(ind.code) && s.status === "active" && s.qualified > 0).length;
+        if (picks.length < slots || productive < 2) units.push({ runId, kind: "scout", params: { industry: ind.code } });
+        if (ind.sizeFocus === "enterprise" && plan.hunterAllocation.enterprise > 0) units.push({ runId, kind: "hunt", params: { industry: ind.code, agent: "enterprise_hunter", quota: Math.ceil(ind.quota / 2), themes: plan.searchThemes } });
+      }
+      const rows = units.length ? await db.insert(schema.runWork).values(units).returning() : [];
+      for (const w of rows) await q.send(w.kind === "harvest" ? JOBS.harvest : w.kind === "scout" ? JOBS.scout : JOBS.hunt, { runId, workId: w.id }, { singletonKey: w.id });
+      await bumpStat(runId, "workPlanned", rows.length);
+      if (!rows.length) await q.send(JOBS.finalize, { runId }, { singletonKey: `${runId}:advance` });
     }
-
-    // ── Fan out candidate research jobs (parallel execution in the worker pool).
-    const fresh = await getRun(runId);
-    if (fresh?.status !== "running") return;
     await heartbeat(runId, "research");
-    const pending = await db.select({ companyId: schema.runCandidates.companyId }).from(schema.runCandidates).where(and(eq(schema.runCandidates.runId, runId), inArray(schema.runCandidates.status, ["pending"])));
-    for (const p of pending) await q.send(JOBS.candidate, { runId, companyId: p.companyId }, { singletonKey: `${runId}:${p.companyId}` });
-    if (!pending.length) await q.send(JOBS.finalize, { runId }, { singletonKey: `${runId}:finalize` });
   } catch (err) {
-    if (err instanceof BudgetExceededError) {
-      await pauseRun(runId, "system:budget", err.message);
-      return;
-    }
-    const msg = err instanceof Error ? err.message : String(err);
-    await db.update(schema.researchRuns).set({ error: msg.slice(0, 2000) }).where(eq(schema.researchRuns.id, runId));
-    throw err; // retried by the queue; final failure handled in worker onFail
+    if (err instanceof BudgetExceededError) return void (await pauseRun(runId, "system:budget", err.message));
+    await db.update(schema.researchRuns).set({ error: (err instanceof Error ? err.message : String(err)).slice(0, 2000) }).where(eq(schema.researchRuns.id, runId));
+    throw err;
   }
+}
+
+/** Put previously screened, still-unused candidates back into the funnel (no repeat discovery cost). */
+async function seedFromReserve(runId: string, industries: string[], limit: number) {
+  const db = getDb();
+  const settings = await getSettings();
+  const inds = await db.select({ id: schema.industries.id }).from(schema.industries).where(inArray(schema.industries.code, industries.length ? industries : ["__none__"]));
+  if (!inds.length) return 0;
+  const reserve = await db
+    .select({ id: schema.companies.id, score: schema.companies.screenScore })
+    .from(schema.companies)
+    .where(and(eq(schema.companies.status, "candidate"), eq(schema.companies.relationship, "none"), isNull(schema.companies.deletedAt), inArray(schema.companies.industryId, inds.map((i) => i.id)),
+      sql`${schema.companies.lastResearchedAt} > now() - (${settings.research.factReuseDays} || ' days')::interval`,
+      sql`not exists (select 1 from deliveries d where d.company_id = ${schema.companies.id})`,
+      sql`not exists (select 1 from run_candidates rc join research_runs r on r.id = rc.run_id where rc.company_id = ${schema.companies.id} and r.status in ('running','paused','queued'))`))
+    .orderBy(desc(schema.companies.screenScore))
+    .limit(limit);
+  const q = await getQueue();
+  for (const r of reserve) {
+    await db.insert(schema.runCandidates).values({ runId, companyId: r.id, hunter: "reserve", priority: Math.min(95, r.score ?? 60), checkpoint: { reused: true } }).onConflictDoNothing();
+    await q.send(JOBS.candidate, { runId, companyId: r.id }, { singletonKey: `${runId}:${r.id}`, priority: Math.min(95, r.score ?? 60) });
+  }
+  return reserve.length;
+}
+
+/**
+ * Called whenever work or candidates close. Finalises when everything is done; if the run
+ * is short of its target and budget remains, starts one adaptive shortfall round first
+ * (more exploration sources, source scouting, midmarket + growth hunters).
+ */
+export async function advanceRun(runId: string) {
+  const db = getDb();
+  const run = await getRun(runId);
+  if (!run || run.status !== "running") return;
+  if ((await openWorkCount(runId)) > 0 || (await openCandidateCount(runId)) > 0) return;
+  const settings = await getSettings();
+  const qualified = await qualifiedCount(runId);
+  const round = Math.max(1, ...(await db.select({ r: schema.runWork.round }).from(schema.runWork).where(eq(schema.runWork.runId, runId))).map((w) => w.r));
+  const spent = await spendSince(new Date(0), runId);
+  const budget = run.budgetEur ? Number(run.budgetEur) : Infinity;
+  const plan = run.strategy as Plan | null;
+  if (run.kind !== "company" && plan && qualified < run.targetProspects && round < 2 && spent < budget * 0.7) {
+    const q = await getQueue();
+    const stats = await sourceStats();
+    const units: (typeof schema.runWork.$inferInsert)[] = [];
+    const used = new Set((await db.select({ s: schema.runWork.sourceId }).from(schema.runWork).where(eq(schema.runWork.runId, runId))).map((w) => w.s));
+    for (const ind of plan.industries.slice(0, 4)) {
+      for (const p of selectSources(stats.filter((s) => !used.has(s.id)), ind.code, 3, 0.6)) units.push({ runId, kind: "harvest", sourceId: p.sourceId, params: { industry: ind.code, exploration: p.exploration }, round: 2 });
+      units.push({ runId, kind: "scout", params: { industry: ind.code }, round: 2 });
+      units.push({ runId, kind: "hunt", params: { industry: ind.code, agent: "midmarket_hunter", quota: 15, themes: plan.searchThemes }, round: 2 });
+    }
+    const minEmp = (run.params as RunParams).minEmployees ?? settings.icp.minEmployees;
+    if (minEmp < settings.icp.primaryBand[0] && plan.industries[0]) units.push({ runId, kind: "hunt", params: { industry: plan.industries[0].code, agent: "growth_market_hunter", quota: 10, themes: plan.searchThemes }, round: 2 });
+    const rows = await db.insert(schema.runWork).values(units).returning();
+    for (const w of rows) await q.send(w.kind === "harvest" ? JOBS.harvest : w.kind === "scout" ? JOBS.scout : JOBS.hunt, { runId, workId: w.id }, { singletonKey: w.id });
+    await bumpStat(runId, "shortfallRound", 1);
+    await audit({ actorType: "system", action: "run.shortfall_round", entityType: "research_run", entityId: runId, details: { qualified, target: run.targetProspects, units: rows.length } });
+    return;
+  }
+  await finalizeRun(runId);
 }
 
 const PRIORITY = (score: number) => (score >= 85 ? "A" : score >= 70 ? "B" : "C");
 
 /**
- * Stages 11–12: rank QA-approved, contact-eligible prospects, build the weekly
- * list (as draft for human approval), CSO review + management summary.
+ * Rank QA-approved, contact-eligible prospects, write rationales in batches (Lead
+ * Qualification Specialist), build the draft list, CSO review + management summary.
  */
 export async function finalizeRun(runId: string) {
   const db = getDb();
   const run = await getRun(runId);
   if (!run || run.status === "completed" || run.status === "cancelled") return;
-  if ((await openCandidateCount(runId)) > 0) return; // not done yet
+  if ((await openCandidateCount(runId)) > 0 || (await openWorkCount(runId)) > 0) return;
   await heartbeat(runId, "finalize");
   const settings = await getSettings();
   const params = run.params as RunParams;
@@ -182,11 +191,7 @@ export async function finalizeRun(runId: string) {
     .from(schema.runCandidates)
     .innerJoin(schema.companies, eq(schema.companies.id, schema.runCandidates.companyId))
     .where(and(eq(schema.runCandidates.runId, runId), eq(schema.runCandidates.outcome, "qualified"), eq(schema.companies.contactEligibility, "eligible")));
-  const ranked = qualified
-    .map((r) => r.c)
-    .sort((a, b) => (b.fitScore ?? 0) - (a.fitScore ?? 0) || (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0));
-
-  // Growth band (50–300) capped unless the primary market leaves a shortfall.
+  const ranked = qualified.map((r) => r.c).sort((a, b) => (b.fitScore ?? 0) - (a.fitScore ?? 0) || (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0));
   const primary = ranked.filter((c) => sizeBand(employeeEstimate(c)) !== "50-299");
   const growth = ranked.filter((c) => sizeBand(employeeEstimate(c)) === "50-299");
   const growthCap = primary.length >= params.target ? Math.floor(params.target * settings.icp.growthMaxShare) : params.target - primary.length;
@@ -194,9 +199,39 @@ export async function finalizeRun(runId: string) {
     .sort((a, b) => (b.fitScore ?? 0) - (a.fitScore ?? 0))
     .slice(0, params.target);
 
+  // Batch rationale (≤20 per call) — one model call per batch instead of one per company.
+  for (let i = 0; i < selected.length; i += 20) {
+    const batch = selected.slice(i, i + 20);
+    try {
+      const companies = await Promise.all(batch.map(async (c) => {
+        const d = await buildDossier(c.id, false);
+        return { companyId: c.id, name: c.officialName, facts: { industry: d?.company.industry?.name, employees: employeeEstimate(c), technology: d?.technologyEvidence.slice(0, 8), signals: d?.buyingSignals.slice(0, 4) }, score: d?.score ? { fit: d.score.fit, confidence: d.score.confidence, components: d.score.components } : null, ruleBasedService: c.recommendedService ?? "ms_security_assessment" };
+      }));
+      const { output } = await runAgent<typeof S.RationaleBatchOutput>("lead_qualification_specialist", "rationale_batch", { companies }, { runId });
+      for (const it of output.items) {
+        const c = batch.find((x) => x.id === it.companyId);
+        if (!c || !SERVICES.includes(it.recommendedService)) continue;
+        const [score] = await db.select().from(schema.qualificationScores).where(eq(schema.qualificationScores.companyId, c.id)).orderBy(desc(schema.qualificationScores.createdAt)).limit(1);
+        if (!score) continue;
+        const override = it.recommendedService !== c.recommendedService;
+        await db.update(schema.qualificationScores).set({ rationale: `${it.rationale}${override ? `\n[Afwijking van regel-dienst ${c.recommendedService}: ${it.serviceReason}]` : ""}\n\n${score.rationale}`, recommendedService: it.recommendedService, createdBy: "lead_qualification_specialist" }).where(eq(schema.qualificationScores.id, score.id));
+        if (override) await db.update(schema.companies).set({ recommendedService: it.recommendedService }).where(eq(schema.companies.id, c.id));
+      }
+    } catch (e) {
+      if (e instanceof BudgetExceededError) break;
+      console.error(`[run ${runId}] rationale batch failed — deterministic rationale kept`, e instanceof Error ? e.message : e);
+    }
+  }
+
   const counts = await runCandidateCounts(runId);
   const shortfall = Math.max(0, params.target - selected.length);
   const qaRows = await db.select().from(schema.qaReviews).where(eq(schema.qaReviews.runId, runId));
+  const rejectionReasons = await db.select({ outcome: schema.runCandidates.outcome }).from(schema.runCandidates).where(and(eq(schema.runCandidates.runId, runId), notInArray(schema.runCandidates.status, ["done", "pending", "in_progress"])));
+  const reasonBuckets = rejectionReasons.reduce<Record<string, number>>((m, r) => {
+    const k = (r.outcome ?? "onbekend").split(/[:(—]/)[0].trim().slice(0, 60);
+    m[k] = (m[k] ?? 0) + 1;
+    return m;
+  }, {});
   const qaSummary = {
     reviewed: qaRows.length,
     approved: qaRows.filter((r) => r.verdict === "approved").length,
@@ -205,11 +240,10 @@ export async function finalizeRun(runId: string) {
     topIssues: Object.entries(qaRows.flatMap((r) => r.issues).reduce<Record<string, number>>((m, i) => ((m[i.slice(0, 80)] = (m[i.slice(0, 80)] ?? 0) + 1), m), {})).sort((a, b) => b[1] - a[1]).slice(0, 10),
   };
   const shortfallExplanation = shortfall
-    ? `Doel ${params.target}, ${selected.length} gekwalificeerd. Kandidaten: ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(", ")}. Kwaliteit is niet verlaagd om het aantal te halen.`
+    ? `Doel ${params.target}, ${selected.length} gekwalificeerd. Belangrijkste afvalredenen: ${Object.entries(reasonBuckets).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k} (${v})`).join(", ")}. Kwaliteit is niet verlaagd om het aantal te halen.`
     : null;
 
-  const listValues = { isoWeek: isoWeek(new Date(), settings.schedule.timezone), runId, status: "draft" as const, target: params.target, shortfall, shortfallExplanation, qaReport: { summary: qaSummary, candidateCounts: counts } };
-  // A re-finalised run (after retrying failed tasks) rebuilds its unexported list instead of creating a duplicate.
+  const listValues = { isoWeek: isoWeek(new Date(), settings.schedule.timezone), runId, status: "draft" as const, target: params.target, shortfall, shortfallExplanation, qaReport: { summary: qaSummary, candidateCounts: counts, rejectionReasons: reasonBuckets } };
   const [existingList] = await db.select().from(schema.prospectLists).where(and(eq(schema.prospectLists.runId, runId), inArray(schema.prospectLists.status, ["draft", "in_review"])));
   let list: typeof schema.prospectLists.$inferSelect;
   if (existingList) {
@@ -218,22 +252,22 @@ export async function finalizeRun(runId: string) {
   } else {
     [list] = await db.insert(schema.prospectLists).values(listValues).returning();
   }
-
   let rank = 0;
   for (const c of selected) {
     const contacts = await db.select().from(schema.contacts).where(eq(schema.contacts.companyId, c.id));
     const pref = ["cio", "it_manager", "ciso", "security_officer", "cto", "cfo", "ceo", "other"];
     const best = contacts.sort((a, b) => pref.indexOf(a.roleCategory ?? "other") - pref.indexOf(b.roleCategory ?? "other"))[0];
-    await db.insert(schema.prospectListItems).values({ listId: list.id, companyId: c.id, rank: ++rank, priority: PRIORITY(c.fitScore ?? 0), contactRole: best?.roleTitle ?? "IT-manager / CIO", contactName: best?.sourceId ? best.fullName : null });
+    const [fresh] = await db.select({ fit: schema.companies.fitScore }).from(schema.companies).where(eq(schema.companies.id, c.id));
+    await db.insert(schema.prospectListItems).values({ listId: list.id, companyId: c.id, rank: ++rank, priority: PRIORITY(fresh?.fit ?? c.fitScore ?? 0), contactRole: best?.roleTitle ?? "IT-manager / CIO", contactName: best?.sourceId ? best.fullName : null });
   }
 
-  // CSO review and management summary. A model failure does not lose the list: the summary is marked as missing.
   let managementSummary: string;
+  const topSources = (await sourceStats()).filter((s) => s.harvestCount > 0).sort((a, b) => b.qualified - a.qualified).slice(0, 5).map((s) => ({ name: s.name, type: s.sourceType, uniqueNew: s.uniqueNew, qualified: s.qualified }));
   try {
     const { output } = await runAgent<typeof S.ListApprovalOutput>("chief_sales_officer", "approve_list", {
-      isoWeek: list.isoWeek, stats: { target: params.target, selected: selected.length, candidates: counts, costEur: Number(run.costEur) }, qaSummary, shortfall,
+      isoWeek: list.isoWeek, stats: { target: params.target, selected: selected.length, candidates: counts, costEur: Number((await getRun(runId))?.costEur ?? 0), rejectionReasons: reasonBuckets, topSources }, qaSummary, shortfall,
       topCompanies: selected.slice(0, 15).map((c) => ({ name: c.officialName, fit: c.fitScore, confidence: c.confidenceScore, service: c.recommendedService, employees: employeeEstimate(c) })),
-    }, { runId, capabilities: buildCapabilities() });
+    }, { runId });
     managementSummary = output.managementSummary + (output.concerns.length ? `\n\n**Aandachtspunten CSO:**\n- ${output.concerns.join("\n- ")}` : "");
     await db.update(schema.prospectLists).set({ status: output.approveForReview ? "in_review" : "draft" }).where(eq(schema.prospectLists.id, list.id));
   } catch (e) {
@@ -250,3 +284,6 @@ export async function finalizeRun(runId: string) {
   }
   return list.id;
 }
+
+export type { AgentId };
+export { ResearchService };

@@ -104,7 +104,7 @@ describe("DNS-over-HTTPS provider (passive)", () => {
     expect(snap.mx).toEqual(["synth-example.mail.protection.outlook.com."]);
     expect(snap.txt).toEqual(["MS=ms123"]);
     expect(snap.cname.autodiscover).toBe("autodiscover.outlook.com.");
-    expect(calls.every((c) => /type=(MX|TXT|CNAME)/.test(c))).toBe(true);
+    expect(calls.every((c) => /type=(MX|TXT|CNAME|SRV)/.test(c))).toBe(true);
   });
 });
 
@@ -133,7 +133,7 @@ describe("research service: provenance, caching and reuse", () => {
     expect(a.injectionFlags.length).toBeGreaterThan(0);
     const b = await rs.fetchPage("https://www.synthzorg.example", "official_site");
     expect(fetchP.fetched.filter((u) => u === "https://www.synthzorg.example")).toHaveLength(1); // second hit served from cache
-    expect(b.sourceId).not.toBe(a.sourceId);
+    expect(b.sourceId).toBe(a.sourceId); // no duplicate provenance rows for identical content
     const usage = await db.select().from(schema.providerUsage).where(eq(schema.providerUsage.provider, "fake-fetch"));
     expect(usage.some((u) => u.cached)).toBe(true);
   });
@@ -199,10 +199,16 @@ describe("agents: least privilege and contracts", () => {
     for (const a of Object.values(AGENTS)) for (const t of Object.values(a.tasks)) expect(toolJsonSchema(t.output).type).toBe("object");
   });
   it("system prompts include security rules, company knowledge and installed skills", () => {
-    const p = buildSystemPrompt("company_research_specialist", AGENTS.company_research_specialist.tasks.enrich_company, DEFAULT_SETTINGS);
+    const p = buildSystemPrompt("chief_sales_officer", AGENTS.chief_sales_officer.tasks.plan_week, DEFAULT_SETTINGS);
     expect(p).toContain("untrusted_content");
     expect(p).toContain("Protect 365");
-    expect(p).toContain('skill "lead-research-assistant"');
+    expect(p).toContain('skill "prospecting"');
+    // High-volume extraction carries no skill text (cost), QA only the short Cloud Life skill.
+    const ext = buildSystemPrompt("company_research_specialist", AGENTS.company_research_specialist.tasks.extract_profile, DEFAULT_SETTINGS);
+    expect(ext).not.toContain("Methodiek uit skill");
+    const qa = buildSystemPrompt("quality_assurance_director", AGENTS.quality_assurance_director.tasks.review, DEFAULT_SETTINGS);
+    expect(qa).toContain('skill "sales-army-qa"');
+    expect(qa).not.toContain('skill "firecrawl-scrape"');
     expect(loadSkill("../../etc/passwd")).toBeNull();
   });
 });

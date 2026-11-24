@@ -4,6 +4,7 @@ import * as s from "./schema";
 import { INDUSTRY_SEED, EXCLUSION_SEED, SECTOR_EXCLUSIONS } from "./seed-data";
 import { normalizeExclusionValue } from "@/domain/exclusion";
 import { DEFAULT_SCORING } from "@/domain/scoring";
+import { PAGE_SEEDS, QUERY_SEEDS } from "@/discovery/seeds";
 
 /** Idempotent reference-data seed. Safe to run on every deploy. */
 export async function seedReferenceData(db: DB) {
@@ -30,6 +31,9 @@ export async function seedReferenceData(db: DB) {
       version: 1, weights: DEFAULT_SCORING.weights, thresholds: DEFAULT_SCORING.thresholds, rules: DEFAULT_SCORING.rules,
       active: true, notes: "Initieel scoremodel (hypothese, te valideren met commerciële resultaten)", createdBy: "system:seed", approvedBy: "system:seed",
     });
+  }
+  for (const src of [...PAGE_SEEDS, ...QUERY_SEEDS]) {
+    await db.insert(s.discoverySources).values({ kind: src.kind, sourceType: src.sourceType, name: src.name, url: src.url ?? null, query: src.query ?? null, industryCodes: src.industries, region: src.region ?? null, reharvestDays: src.reharvestDays ?? 90, origin: "seed" }).onConflictDoNothing();
   }
   const [{ sc }] = await db.select({ sc: sql<number>`count(*)::int` }).from(s.strategies);
   if (sc === 0) {

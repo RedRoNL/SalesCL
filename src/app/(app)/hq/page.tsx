@@ -74,7 +74,7 @@ export default async function HQ({ searchParams }: { searchParams: Promise<{ age
         </div>
 
         <div>
-          {!modelAvailable() && <div className="mb-3 text-[12px] text-warn border border-warn/30 bg-warn/10 rounded-md px-3 py-2">ANTHROPIC_API_KEY ontbreekt: berichten worden in de wachtrij gezet maar agents kunnen niet antwoorden.</div>}
+          {!(await modelAvailable()) && <div className="mb-3 text-[12px] text-warn border border-warn/30 bg-warn/10 rounded-md px-3 py-2">ANTHROPIC_API_KEY ontbreekt: berichten worden in de wachtrij gezet maar agents kunnen niet antwoorden.</div>}
           <AgentChat key={`${selected.id}:${threadId}`} agentId={selected.id} agentName={selected.id === "chief_sales_officer" ? "Chief Sales Officer (Sales Army)" : selected.nameNl} threadId={threadId} examples={EXAMPLES[selected.id] ?? ["Wat zijn je belangrijkste bevindingen van deze week?"]} names={names} canWrite={user.role !== "viewer"} />
           {threads.length > 0 && (
             <div className="mt-3 text-[12px] text-muted">

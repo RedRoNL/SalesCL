@@ -9,7 +9,7 @@ import { eq, and, sql } from "drizzle-orm";
 import ExcelJS from "exceljs";
 import { setupTestDb } from "./helpers/db";
 import { ScriptedModel } from "./helpers/scriptedModel";
-import { FakeDns, FakeFetch, FakeSearch } from "./helpers/world";
+import { FakeDns, FakeFetch, FakeSearch, DIRECTORY_HOME, SCOUT_URL } from "./helpers/world";
 import { schema, type DB } from "@/db/client";
 import { setModelClient } from "@/agents/model";
 import { setProviders } from "@/research/service";
@@ -44,8 +44,9 @@ beforeAll(async () => {
   // Pre-existing Cloud Life customer (synthetic) to test duplicate/customer exclusion.
   await db.insert(schema.companies).values({ officialName: "Synthetische Bouw Groep N.V.", normalizedName: normalizeCompanyName("Synthetische Bouw Groep N.V."), canonicalDomain: "synthbouw.example", website: "https://www.synthbouw.example", relationship: "customer", status: "excluded" });
   // Existing market segment for healthcare → hunters (not the MI director) get that industry.
-  const [hc] = await db.select().from(schema.industries).where(eq(schema.industries.code, "healthcare"));
-  await db.insert(schema.marketSegments).values({ industryId: hc.id, sizeBand: "midmarket", queriesUsed: ["zorg ledenlijst"], candidatesFound: 0 });
+  // Discovery-source database: replace real seed sources with one synthetic association.
+  await db.delete(schema.discoverySources);
+  await db.insert(schema.discoverySources).values({ kind: "page", sourceType: "association", name: "Synthetische Branchevereniging", url: DIRECTORY_HOME, industryCodes: ["food_production", "healthcare"], origin: "seed" });
 });
 afterAll(async () => {
   setModelClient(null);
@@ -90,11 +91,13 @@ describe("weekly research run (end to end)", () => {
     expect(all.filter((c) => c.canonicalDomain === "synthbouw.example")).toHaveLength(1);
   });
 
-  it("rejects companies contradicting the Microsoft fit (Google Workspace)", async () => {
+  it("rejects companies contradicting the Microsoft fit for free, before any model call", async () => {
     const [c] = await db.select().from(schema.companies).where(eq(schema.companies.canonicalDomain, "synthlog.example"));
     expect(c.status).toBe("rejected");
-    const [score] = await db.select().from(schema.qualificationScores).where(eq(schema.qualificationScores.companyId, c.id));
-    expect(score.hardFailures.join(" ")).toMatch(/Microsoft/);
+    const [rc] = await db.select().from(schema.runCandidates).where(eq(schema.runCandidates.companyId, c.id));
+    expect(rc.outcome).toMatch(/Google Workspace/);
+    const tasks = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.companyId, c.id));
+    expect(tasks).toHaveLength(0); // screening is deterministic and free
   });
 
   it("keeps natural-person legal forms (VOF) out of calling lists", async () => {
@@ -108,18 +111,63 @@ describe("weekly research run (end to end)", () => {
     const ev = await db.select().from(schema.technologyEvidence).where(eq(schema.technologyEvidence.companyId, c.id));
     const get = (t: string) => ev.filter((e) => e.technology === t).map((e) => e.classification);
     expect(get("exchange_online")).toContain("confirmed"); // MX + autodiscover
-    expect(get("intune")).toContain("confirmed"); // vacancy quote matched retrieved text
-    expect(get("defender")).toContain("weakly_indicated"); // quote not in source → downgraded
-    expect(get("purview")).toEqual([]); // unsourced claim dropped
+    expect(get("intune")).toContain("strongly_indicated"); // vacancy mention, deterministic website scan
+    expect(get("intune")).toContain("confirmed"); // extraction claim whose quote exists in the vacancy page
+    expect(get("defender")).toEqual([]); // fabricated quote → dropped by code
+    expect(get("purview")).toEqual([]);
     const sources = await db.select().from(schema.researchSources).where(eq(schema.researchSources.companyId, c.id));
     expect(sources.some((s) => s.sourceType === "official_site")).toBe(true);
+    expect(sources.some((s) => s.sourceType === "vacancy")).toBe(true);
     expect(sources.some((s) => s.sourceType === "dns")).toBe(true);
-    expect(c.phonePublic).toBe("+31101234567");
+    expect(c.phonePublic).toBe("+31101234567"); // found deterministically on the contact page
+    expect(c.kvkNumber).toBe("90000001");
     expect(c.employeeCount).toBe(800);
-    // Fact citing a non-existent source is stored with zero confidence, never as verified.
-    const facts = await db.select().from(schema.companyFacts).where(and(eq(schema.companyFacts.companyId, c.id), eq(schema.companyFacts.field, "made_up_fact")));
-    expect(facts[0].sourceId).toBeNull();
-    expect(facts[0].confidence).toBe(0);
+    expect(c.legalForm).toBe("bv");
+    // No source row is duplicated even though several stages touched the same pages.
+    const urls = sources.map((s) => `${s.url}|${s.contentHash}`);
+    expect(new Set(urls).size).toBe(urls.length);
+  });
+
+  it("drops names that do not occur on the harvested page (anti-hallucination)", async () => {
+    const all = await db.select().from(schema.companies);
+    expect(all.some((c) => /Verzonnen/.test(c.officialName))).toBe(false);
+  });
+
+  it("builds a persistent discovery-source database with per-source yield", async () => {
+    const { sourceStats } = await import("@/discovery/sources");
+    const stats = await sourceStats();
+    const dir = stats.find((s) => s.url === DIRECTORY_HOME)!;
+    expect(dir.status).toBe("active");
+    expect(dir.uniqueNew).toBeGreaterThanOrEqual(5);
+    expect(dir.qualified).toBe(2);
+    const scouted = stats.find((s) => s.url === SCOUT_URL)!;
+    expect(scouted.origin).toBe("agent"); // found by the Market Intelligence Director during the run
+    expect(scouted.uniqueNew).toBe(1); // Synthetische Zuivel: not in the association list
+    expect(stats.some((s) => s.url === "https://unfetched.example/top100")).toBe(false); // agent must have retrieved it
+  });
+
+  it("only activates expensive specialists when needed", async () => {
+    const [food] = await db.select().from(schema.companies).where(eq(schema.companies.canonicalDomain, "synthfood.example"));
+    const [zuivel] = await db.select().from(schema.companies).where(eq(schema.companies.canonicalDomain, "synthzuivel.example"));
+    const byCompany = async (id: string) => (await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.companyId, id))).map((t) => t.taskType).sort();
+    // Strong DNS evidence → no Microsoft specialist; high fit → signal analyst; complete profile → no gap-filling.
+    expect(await byCompany(food.id)).toEqual(["extract_profile", "find_signals", "review"]);
+    // Weak Microsoft evidence and missing phone → gap-filling and Microsoft specialist; low fit → no signals, no QA.
+    expect(await byCompany(zuivel.id)).toEqual(["assess_microsoft", "deep_research", "extract_profile"]);
+    // Extraction runs on the cheap tier with no tools.
+    const ext = model.calls.filter((c) => c.task.startsWith("Bedrijfsprofiel extraheren"));
+    expect(ext.every((c) => c.model === "claude-haiku-5-5" && c.tools.length === 1)).toBe(true);
+    // The CSO never works on individual companies.
+    const cso = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.agentId, "chief_sales_officer"));
+    expect(cso.every((t) => t.companyId === null)).toBe(true);
+  });
+
+  it("runs an adaptive shortfall round when the target is not met", async () => {
+    const run = await getRun(runId);
+    expect((run!.stats as Record<string, number>).shortfallRound).toBe(1);
+    const work = await db.select().from(schema.runWork).where(eq(schema.runWork.runId, runId));
+    expect(work.some((w) => w.round === 2 && (w.params as { agent?: string }).agent === "growth_market_hunter")).toBe(true);
+    expect(work.every((w) => w.status !== "pending")).toBe(true);
   });
 
   it("separates commercial fit from evidence confidence and explains the score", async () => {
@@ -129,7 +177,10 @@ describe("weekly research run (end to end)", () => {
     expect(c.recommendedService).toBe("copilot_security_assessment"); // Copilot adoption signal
     const [s] = await db.select().from(schema.qualificationScores).where(eq(schema.qualificationScores.companyId, c.id));
     expect((s.components as unknown[]).length).toBe(6);
-    expect(s.rationale.length).toBeGreaterThan(10);
+    expect(s.rationale).toMatch(/batch/); // Lead Qualification Specialist wrote it in one batch call
+    expect(s.rationale).toMatch(/Fit \d+\/100/); // deterministic component explanation kept
+    const batches = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.taskType, "rationale_batch"));
+    expect(batches).toHaveLength(1);
   });
 
   it("QA operates independently and records reviews", async () => {
@@ -157,7 +208,7 @@ describe("weekly research run (end to end)", () => {
   it("coordinates multiple genuine specialist agents and tracks cost per task", async () => {
     const rows = await db.execute(sql`select distinct agent_id from agent_tasks where run_id = ${runId}`);
     const agents = (rows as unknown as { agent_id: string }[]).map((r) => r.agent_id);
-    for (const a of ["chief_sales_officer", "market_intelligence_director", "midmarket_hunter", "company_research_specialist", "microsoft_intelligence_specialist", "buying_signal_analyst", "lead_qualification_specialist", "quality_assurance_director"]) expect(agents).toContain(a);
+    for (const a of ["chief_sales_officer", "market_intelligence_director", "midmarket_hunter", "growth_market_hunter", "company_research_specialist", "microsoft_intelligence_specialist", "buying_signal_analyst", "lead_qualification_specialist", "quality_assurance_director"]) expect(agents).toContain(a);
     const [cost] = (await db.execute(sql`select sum(cost_eur)::float as c, sum(input_tokens)::int as t from agent_tasks where run_id = ${runId}`)) as unknown as { c: number; t: number }[];
     expect(cost.c).toBeGreaterThan(0);
     expect(cost.t).toBeGreaterThan(0);
@@ -260,9 +311,9 @@ describe("run control: pause, resume, budget, failure recovery", () => {
   });
 
   it("retries transient failures and recovers failed tasks", async () => {
-    await db.delete(schema.companies).where(eq(schema.companies.canonicalDomain, "synthlog.example"));
-    model.failNext("Bedrijfsdossier", 3);
-    const r = await createRun("company", { target: 1, companyName: "Synthetische Logistiek B.V.", companyWebsite: "https://www.synthlog.example" }, "user:test");
+    await db.delete(schema.companies).where(eq(schema.companies.canonicalDomain, "synthzuivel.example"));
+    model.failNext("Bedrijfsprofiel extraheren", 3);
+    const r = await createRun("company", { target: 1, companyName: "Synthetische Zuivel B.V.", companyWebsite: "https://www.synthzuivel.example" }, "user:test");
     await queue.drain(); // attempt 1 fails → candidate pending with error (pg-boss would retry with backoff)
     let [rc] = await db.select().from(schema.runCandidates).where(eq(schema.runCandidates.runId, r.runId));
     expect(rc.lastError).toMatch(/transient/);

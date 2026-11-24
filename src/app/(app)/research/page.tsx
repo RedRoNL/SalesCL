@@ -3,7 +3,7 @@ import { desc } from "drizzle-orm";
 import { getDb, schema } from "@/db/client";
 import { getSettings } from "@/lib/settings";
 import { requirePageUser } from "@/lib/auth/current";
-import { integrationStatus } from "@/lib/env";
+import { integrationStatus } from "@/lib/secrets";
 import { startRunAction } from "@/app/actions";
 import { PageHeader, Section, Badge, Field, Button, Empty, eur, dt } from "@/components/ui";
 import { label, tone } from "@/lib/labels";
@@ -11,7 +11,7 @@ import { label, tone } from "@/lib/labels";
 export default async function Research() {
   const user = await requirePageUser("viewer");
   const settings = await getSettings();
-  const integ = integrationStatus();
+  const integ = await integrationStatus();
   const db = getDb();
   const industries = (await db.select().from(schema.industries)).filter((i) => i.priorityTier > 0).sort((a, b) => a.priorityTier - b.priorityTier);
   const runs = await db.select().from(schema.researchRuns).orderBy(desc(schema.researchRuns.createdAt)).limit(30);

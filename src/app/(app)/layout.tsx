@@ -1,5 +1,5 @@
 import { requirePageUser } from "@/lib/auth/current";
-import { integrationStatus } from "@/lib/env";
+import { integrationStatus } from "@/lib/secrets";
 import { Nav } from "@/components/Nav";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +8,7 @@ const ROLE_NL = { admin: "Beheerder", analyst: "Analist", viewer: "Alleen-lezen"
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await requirePageUser("viewer");
-  const integ = integrationStatus();
+  const integ = await integrationStatus();
   const missing = [!integ.anthropic && "Claude API", !integ.firecrawl && "Firecrawl", !integ.entra && "Entra ID"].filter(Boolean);
   return (
     <div className="min-h-screen flex">

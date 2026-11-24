@@ -42,6 +42,11 @@ export interface AgentTask<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   tools: ToolName[];
   modelTier?: ModelTier;
   maxTurns?: number;
+  /** Which skill text to inject: all assigned skills (strategy/discovery), only Cloud Life project skills (short), or none (high-volume extraction). */
+  skills?: "all" | "project" | "none";
+  effort?: "low" | "medium" | "high";
+  /** Max output tokens for this task (keeps cheap tasks cheap). */
+  maxTokens?: number;
 }
 
 export interface AgentDefinition {
@@ -58,5 +63,7 @@ export interface AgentDefinition {
   qualityStandards: string[];
   escalationRules: string[];
   kpis: { key: string; label: string }[];
+  /** When the agent is activated (dynamic activation, documented in AGENTS.md). */
+  activation: string;
   tasks: Record<string, AgentTask>;
 }

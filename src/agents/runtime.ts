@@ -49,8 +49,9 @@ export function resolveModel(settings: Settings, agentId: AgentId, tier: ModelTi
 /** Build the (cache-friendly, stable) system prompt for an agent task. */
 export function buildSystemPrompt(agentId: AgentId, task: AgentTask, settings: Settings): string {
   const a = getAgent(agentId);
-  const enabledSkills = settings.agentSkills[agentId] ?? a.skills;
-  const skillText = enabledSkills.map((s) => loadSkill(s, 4500)).filter(Boolean).join("\n\n");
+  const mode = task.skills ?? "project";
+  const enabledSkills = (settings.agentSkills[agentId] ?? a.skills).filter((s) => mode === "all" || (mode === "project" && s.startsWith("sales-army-")));
+  const skillText = mode === "none" ? "" : enabledSkills.map((s) => loadSkill(s, mode === "all" ? 4500 : 2500)).filter(Boolean).join("\n\n");
   return [
     `Je bent agent ${a.number.toString().padStart(2, "0")} van het Cloud Life Sales Army: ${a.nameNl}.`,
     `Missie: ${a.mission}`,
@@ -129,7 +130,7 @@ export async function runAgent<T extends z.ZodType>(
   let nudges = 0;
   let invalidSubmits = 0;
   const maxTurns = task.maxTurns ?? 12;
-  const client = getModelClient();
+  const client = await getModelClient();
 
   const persist = async (extra: Partial<typeof schema.agentTasks.$inferInsert> = {}) => {
     await db
@@ -148,11 +149,11 @@ export async function runAgent<T extends z.ZodType>(
       await assertWithinBudget(opts.runId);
       const response = await client.create({
         model,
-        max_tokens: 16000,
+        max_tokens: task.maxTokens ?? 16000,
         system,
         tools,
         tool_choice: { type: "auto" },
-        output_config: { effort: settings.models.effort },
+        output_config: { effort: task.effort ?? settings.models.effort },
         messages,
       });
       inTok += response.usage.input_tokens;

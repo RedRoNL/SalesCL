@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { env } from "@/lib/env";
+import { getSecret } from "@/lib/secrets";
 
 /**
  * Model client abstraction. Production uses the official Anthropic SDK
@@ -24,12 +24,14 @@ let override: ModelClient | null = null;
 export function setModelClient(c: ModelClient | null) {
   override = c;
 }
-export function getModelClient(): ModelClient {
+let cached: { key: string; client: AnthropicModelClient } | null = null;
+export async function getModelClient(): Promise<ModelClient> {
   if (override) return override;
-  const key = env().ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY ontbreekt — AI-agents kunnen niet draaien (zie BUILD_STATUS.md)");
-  return new AnthropicModelClient(key);
+  const key = await getSecret("ANTHROPIC_API_KEY");
+  if (!key) throw new Error("ANTHROPIC_API_KEY ontbreekt — stel de Claude API-sleutel in via Setup (/setup)");
+  if (!cached || cached.key !== key) cached = { key, client: new AnthropicModelClient(key) };
+  return cached.client;
 }
-export function modelAvailable(): boolean {
-  return Boolean(override || env().ANTHROPIC_API_KEY);
+export async function modelAvailable(): Promise<boolean> {
+  return Boolean(override || (await getSecret("ANTHROPIC_API_KEY")));
 }

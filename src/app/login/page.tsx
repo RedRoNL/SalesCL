@@ -13,7 +13,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
         <h1 className="text-lg font-semibold mb-1">Sales Army</h1>
         <p className="text-muted mb-5 text-[13px]">Commercieel intelligentieplatform. Toegang uitsluitend voor Cloud Life-medewerkers.</p>
         {error && <div className="mb-4 text-[12px] text-bad">{error === "entra_not_configured" ? "Microsoft Entra ID is niet geconfigureerd." : "Inloggen mislukt."}</div>}
-        {entraConfigured() ? (
+        {(await entraConfigured()) ? (
           <a href="/api/auth/login" className="block text-center rounded-md bg-accent text-accent-ink font-medium py-2">Inloggen met Microsoft</a>
         ) : (
           <p className="text-[12px] text-warn">Microsoft Entra ID is nog niet geconfigureerd (zie DEPLOYMENT.md).</p>

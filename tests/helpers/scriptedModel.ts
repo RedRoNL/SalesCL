@@ -1,12 +1,13 @@
 /**
- * SYNTHETIC scripted model used in tests in place of Claude. It drives the
- * real agent runtime through realistic tool-use sequences (search → fetch →
- * submit) so orchestration, validation, persistence and security controls are
- * exercised end to end without network or API keys.
+ * SYNTHETIC scripted model used in tests in place of Claude. It drives the real agent
+ * runtime through realistic tool-use sequences so orchestration, validation, persistence
+ * and security controls are exercised end to end without network or API keys.
+ * It deliberately includes bad behaviour (a fabricated company name, a fabricated quote,
+ * a privileged tool call after reading an injected page) to prove the code rejects it.
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ModelClient } from "@/agents/model";
-import { WORLD, DIRECTORY_URL, NEWS_HOST, companyByUrl } from "./world";
+import { ALL, WORLD, DIRECTORY_URL, SCOUT_URL, NEWS_HOST, companyByUrl, contactText, aboutText } from "./world";
 
 type Block = Anthropic.ContentBlock;
 let n = 0;
@@ -23,7 +24,6 @@ export class ScriptedModel implements ModelClient {
   calls: { task: string; model: string; tools: string[] }[] = [];
   failures = new Map<string, number>();
   toolResultsSeen: string[] = [];
-  /** Make the next `count` calls for a task (matched by substring) throw. */
   failNext(taskSubstring: string, count: number) {
     this.failures.set(taskSubstring, count);
   }
@@ -52,60 +52,65 @@ export class ScriptedModel implements ModelClient {
     if (task.startsWith("Wekelijkse onderzoeksstrategie")) {
       return submit({
         strategySummary: "Synthetische strategie: focus op voedselproductie en zorg (test).",
-        industries: [{ code: "food_production", quota: 8, rationale: "test", sizeFocus: "midmarket" }, { code: "healthcare", quota: 5, rationale: "test", sizeFocus: "midmarket" }, { code: "it_services", quota: 3, rationale: "should be filtered by code", sizeFocus: "midmarket" }],
+        industries: [{ code: "food_production", quota: 8, rationale: "test", sizeFocus: "midmarket" }, { code: "healthcare", quota: 5, rationale: "test", sizeFocus: "midmarket" }, { code: "it_services", quota: 3, rationale: "must be filtered by code", sizeFocus: "midmarket" }],
         hunterAllocation: { enterprise: 0, midmarket: 13, growth: 0 }, searchThemes: ["ledenlijst"], underexploredIndustries: [], risks: [],
       });
     }
-    if (task.startsWith("Prospectpools") || task.startsWith("Kandidaten vinden")) {
-      if (turn === 0) return msg(p.model, [tool("web_search", { query: `${input.industryName} ledenlijst nederland` })]);
+    if (task.startsWith("Organisaties uit een bronpagina")) {
+      const names = ALL.filter((c) => input.page.includes(c.name)).map((c) => ({ name: c.name, website: null, city: null, role: "member" }));
+      return submit({ isCompanyList: names.length > 0, companies: [...names, { name: "Verzonnen Fantasie Holding", website: null, city: null, role: "member" }] });
+    }
+    if (task.startsWith("Nieuwe ontdekkingsbronnen")) {
+      if (input.industry !== "food_production") return submit({ sources: [], notes: "geen" });
+      if (turn === 0) return msg(p.model, [tool("fetch_page", { url: SCOUT_URL, source_type: "directory" })]);
+      return submit({ sources: [{ name: "Synthbeurs exposanten", sourceType: "trade_fair", url: SCOUT_URL, query: null, rationale: "Exposantenlijst (synthetisch)" }, { name: "Niet opgehaald", sourceType: "ranking", url: "https://unfetched.example/top100", query: null, rationale: "must be rejected: not retrieved" }], notes: "" });
+    }
+    if (task.startsWith("Gerichte prospectjacht")) {
+      if (turn === 0) return msg(p.model, [tool("web_search", { query: `${input.industryName} vacature Intune` })]);
       if (turn === 1) return msg(p.model, [tool("fetch_page", { url: DIRECTORY_URL, source_type: "association" })]);
-      if (turn === 2 && tools.includes("start_research_run") === false && input.industry === "healthcare") {
-        // Simulate a compromised model attempting a privileged tool → must be denied by the runtime.
-        return msg(p.model, [tool("start_research_run", { kind: "manual", target: 5 })]);
-      }
+      if (turn === 2 && input.industry === "healthcare") return msg(p.model, [tool("start_research_run", { kind: "manual", target: 5 })]);
       return submit({
-        candidates: WORLD.map((c) => ({ name: c.name, website: c.website, city: null, estimatedEmployees: c.employees, sourceId: srcIds[0] ?? null, sourceUrl: DIRECTORY_URL, rationale: "Lid van branchevereniging (synthetisch)" })),
-        poolsUsed: [{ name: "Synthetische Branchevereniging", url: DIRECTORY_URL, sourceType: "association", usefulness: "high" }],
-        queriesUsed: [`${input.industryName} ledenlijst nederland`], exhaustionEstimate: 0.2, notes: "synthetisch",
+        candidates: WORLD.slice(0, 2).map((c) => ({ name: c.name, website: c.website, city: null, estimatedEmployees: c.employees, sourceId: srcIds[0] ?? null, sourceUrl: DIRECTORY_URL, rationale: "synthetisch" })),
+        poolsUsed: [{ name: "Synthetische Branchevereniging", url: DIRECTORY_URL, sourceType: "association", usefulness: "high" }], queriesUsed: ["vacature intune"], exhaustionEstimate: 0.5, notes: "synthetisch",
       });
     }
-    if (task.startsWith("Bedrijfsdossier")) {
-      const c = companyByUrl(input.website ?? "") ?? WORLD.find((w) => w.name === input.name)!;
-      if (turn === 0) return msg(p.model, [tool("fetch_page", { url: c.website, source_type: "official_site" })]);
-      const sid = srcIds[srcIds.length - 1];
-      const injectionSeen = results.some((r) => r.includes("WAARSCHUWING"));
+    if (task.startsWith("Bedrijfsprofiel extraheren")) {
+      const pages: { sourceId: string; kind: string; url: string; content: string }[] = input.pages;
+      const c = companyByUrl(pages[0].url)!;
+      const contact = pages.find((x) => x.url.endsWith("/contact"));
+      const about = pages.find((x) => x.url.endsWith("/over-ons"));
+      const vac = pages.find((x) => x.url.endsWith("/vacatures"));
       return submit({
-        officialName: c.name, tradingName: null, website: c.website, industryCode: c.industry, businessCategory: c.category, subIndustry: null,
-        hqCity: "Synthstad", hqCountry: "NL", nlOfficeCity: "Synthstad", employeeCount: c.employees, employeeMin: null, employeeMax: null, employeeSourceId: sid,
-        groupName: null, groupDomain: null, groupHqCountry: null, purchasingAuthority: "nl_independent", purchasingAuthorityRationale: "Zelfstandige NL-organisatie (synthetisch)",
-        legalForm: c.legalForm, legalFormSourceId: sid, kvkNumber: c.kvk, phone: c.phone, phoneSourceId: sid,
-        decisionMakerRoles: [{ roleTitle: "IT-manager", roleCategory: "it_manager", fullName: null, sourceId: null }], itSecurityNotes: "",
+        officialName: c.name, tradingName: null, industryCode: c.industry, businessCategory: c.category, subIndustry: null, hqCity: "Synthstad", hqCountry: "NL",
+        employees: about ? { count: c.employees, min: null, max: null, sourceId: about.sourceId, quote: aboutText(c).slice(0, 60) } : null,
+        group: null, purchasingAuthority: "nl_independent", purchasingAuthorityQuote: about ? `Over ${c.name}` : null,
+        legalForm: contact ? { value: c.legalForm, sourceId: contact.sourceId, quote: c.name } : null,
+        kvkNumber: contact ? { value: c.kvk, sourceId: contact.sourceId, quote: `KvK ${c.kvk}` } : null,
         compliance: { nis2: c.industry === "healthcare" ? "essential" : "important", dora: false, sensitiveData: true, operationalTechnology: c.industry === "food_production", certificationsOrRegulator: false, rationale: "synthetisch" },
-        fieldConfidence: { employees: 0.9, industry: 0.9, headquarters: 0.8, authority: 0.8, phone: 0.9, legalForm: 0.9 },
-        facts: [{ field: "employees", value: String(c.employees), sourceId: sid, confidence: 0.9 }, { field: "made_up_fact", value: "x", sourceId: "00000000-0000-4000-8000-000000000000", confidence: 0.9 }],
-        unknowns: [], injectionAttemptsObserved: injectionSeen ? ["Instructie-injectie op homepage genegeerd"] : [],
+        msClaims: vac && c.vacancy ? [
+          { technology: "intune", classification: "confirmed", sourceId: vac.sourceId, quote: "ervaring met Microsoft Intune" },
+          { technology: "defender", classification: "confirmed", sourceId: vac.sourceId, quote: "Defender for Endpoint specialist" }, // fabricated quote → must be dropped
+        ] : [],
+        signals: [], decisionMakerRoles: [], unknowns: [],
+        injectionAttemptsObserved: pages.some((x) => x.content.includes("IGNORE ALL")) ? ["Instructie-injectie op homepage genegeerd"] : [],
       });
+    }
+    if (task.startsWith("Kritieke gaten")) {
+      return submit({ employees: null, legalForm: null, kvkNumber: null, phone: null, purchasingAuthority: "unknown", purchasingAuthorityQuote: null, group: null, stillUnknown: input.gaps });
     }
     if (task.startsWith("Microsoft-technologiebewijs")) {
-      const c = WORLD.find((w) => w.name === input.name || w.domain === input.domain)!;
-      if (turn === 0) return msg(p.model, [tool("fetch_page", { url: `${c.website}/vacatures`, source_type: "vacancy" })]);
-      return submit({
-        claims: [
-          { technology: "intune", classification: "confirmed", evidenceType: "vacancy", detail: "Vacature vraagt Intune-ervaring", sourceId: srcIds[0], quote: "ervaring met Microsoft Intune" },
-          { technology: "defender", classification: "confirmed", evidenceType: "vacancy", detail: "Overdreven claim", sourceId: srcIds[0], quote: "Defender for Endpoint specialist" },
-          { technology: "purview", classification: "confirmed", evidenceType: "website", detail: "Geen bron", sourceId: null, quote: null },
-        ],
-        summary: "synthetisch",
-      });
+      const c = ALL.find((w) => w.name === input.name || w.domain === input.domain);
+      if (!c || turn > 0) return submit({ claims: [], summary: "geen aanvullend bewijs gevonden" });
+      return msg(p.model, [tool("fetch_page", { url: `${c.website}/vacatures`, source_type: "vacancy" })]);
     }
     if (task.startsWith("Koopsignalen")) {
-      const c = WORLD.find((w) => w.name === input.name)!;
+      const c = ALL.find((w) => w.name === input.name)!;
       if (c.domain !== "synthfood.example") return submit({ signals: [], notes: "geen signalen" });
       if (turn === 0) return msg(p.model, [tool("fetch_page", { url: `${NEWS_HOST}/${c.domain.split(".")[0]}-copilot`, source_type: "news" })]);
       return submit({ signals: [{ signalType: "copilot_adoption", title: "Copilot-uitrol", explanation: "Uitrol M365 Copilot", relevance: "high", commercialAssessment: "Copilot security assessment relevant", signalDate: new Date().toISOString().slice(0, 10), sourceId: srcIds[0] }], notes: "" });
     }
-    if (task.startsWith("Commerciële kwalificatie")) {
-      return submit({ recommendedService: input.ruleBasedService, serviceReason: "Regel-gebaseerd", rationale: "Synthetische onderbouwing op basis van het dossier.", recurringPotential: "high", risks: [], researchGaps: [] });
+    if (task.startsWith("Commerciële onderbouwing (batch)")) {
+      return submit({ items: input.companies.map((c: { companyId: string; ruleBasedService: string }) => ({ companyId: c.companyId, rationale: "Synthetische onderbouwing op basis van het dossier (batch).", recommendedService: c.ruleBasedService, serviceReason: "regel", recurringPotential: "high" })) });
     }
     if (task.startsWith("Onafhankelijke QA-review")) {
       const d = input.dossier;
@@ -126,3 +131,5 @@ export class ScriptedModel implements ModelClient {
     return msg(p.model, [{ type: "text", text: "?" }], "end_turn");
   }
 }
+
+export { contactText };

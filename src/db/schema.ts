@@ -81,7 +81,7 @@ export const runStatus = pgEnum("run_status", [
   "completed",
   "failed",
 ]);
-export const runKind = pgEnum("run_kind", ["weekly", "manual", "sector", "company", "chat"]);
+export const runKind = pgEnum("run_kind", ["weekly", "manual", "sector", "company", "chat", "pilot"]);
 export const taskStatus = pgEnum("task_status", ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]);
 export const qaVerdict = pgEnum("qa_verdict", ["approved", "rejected", "needs_research"]);
 export const listStatus = pgEnum("list_status", ["draft", "in_review", "approved", "exported"]);
@@ -237,6 +237,10 @@ export const companies = pgTable(
     classification: text("classification"),
     recommendedService: text("recommended_service"),
     reactivationApproved: boolean("reactivation_approved").notNull().default(false),
+    /** Research depth reached: screened (free) → extracted (cheap model) → deep (agent tools). */
+    researchTier: text("research_tier"),
+    /** Deterministic prescreen potential (0–100), used to prioritise expensive research. */
+    screenScore: integer("screen_score"),
     lastResearchedAt: ts("last_researched_at"),
     deletedAt: ts("deleted_at"),
     createdAt: createdAt(),
@@ -249,7 +253,68 @@ export const companies = pgTable(
     index("company_status_idx").on(t.status),
     index("company_industry_idx").on(t.industryId),
     index("company_group_idx").on(t.groupId),
+    index("company_name_trgm_idx").using("gin", sql`${t.normalizedName} gin_trgm_ops`),
   ],
+);
+
+/** Normalised identifiers (domains incl. historical, phones, KvK, name variants) for deduplication. */
+export const companyIdentifiers = pgTable(
+  "company_identifiers",
+  {
+    id: id(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    type: text("type").notNull(), // domain | phone | kvk | name
+    value: text("value").notNull(),
+    source: text("source"), // research | historical_import | feedback | manual
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("identifier_uniq").on(t.companyId, t.type, t.value), index("identifier_lookup_idx").on(t.type, t.value)],
+);
+
+// ───────────────────────────── discovery sources ─────────────────────────────
+/**
+ * Persistent discovery-source database. A source is either a page to harvest
+ * (association member list, exhibitor list, ranking, business park, group
+ * subsidiaries page…) or a search template (vacancies, partner case studies…).
+ * Yield is computed from source_companies, so prioritisation learns over time.
+ */
+export const discoverySources = pgTable(
+  "discovery_sources",
+  {
+    id: id(),
+    kind: text("kind").notNull(), // page | query
+    sourceType: text("source_type").notNull(), // association | trade_fair | ranking | directory | business_park | publication | regional_network | group_structure | annual_report | vacancy | ms_customer_reference | partner_reference | procurement | register
+    name: text("name").notNull(),
+    url: text("url"),
+    query: text("query"),
+    industryCodes: jsonb("industry_codes").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    region: text("region"),
+    status: text("status").notNull().default("unverified"), // unverified | active | exhausted | blocked | retired
+    statusReason: text("status_reason"),
+    origin: text("origin").notNull().default("seed"), // seed | agent | admin | derived
+    harvestCount: integer("harvest_count").notNull().default(0),
+    pagesHarvested: integer("pages_harvested").notNull().default(0),
+    lastHarvestedAt: ts("last_harvested_at"),
+    reharvestDays: integer("reharvest_days").notNull().default(90),
+    lastError: text("last_error"),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("source_url_uniq").on(t.url).where(sql`${t.url} is not null`), uniqueIndex("source_query_uniq").on(t.query).where(sql`${t.query} is not null`)],
+);
+
+/** Which source surfaced which company (and whether it was new to us at that moment). */
+export const sourceCompanies = pgTable(
+  "source_companies",
+  {
+    id: id(),
+    sourceId: uuid("source_id").notNull().references(() => discoverySources.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    runId: uuid("run_id"),
+    wasNew: boolean("was_new").notNull(),
+    role: text("role"), // member | exhibitor | customer | employer | subsidiary | ranked | listed
+    firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("source_company_uniq").on(t.sourceId, t.companyId), index("source_company_company_idx").on(t.companyId)],
 );
 
 export const companyAliases = pgTable(
@@ -501,6 +566,8 @@ export const runCandidates = pgTable(
     status: text("status").notNull().default("pending"), // pending | in_progress | done | rejected | failed | skipped
     attempts: integer("attempts").notNull().default(0),
     hunter: text("hunter"),
+    discoverySourceId: uuid("discovery_source_id"),
+    priority: integer("priority").notNull().default(50),
     lastError: text("last_error"),
     outcome: text("outcome"),
     checkpoint: jsonb("checkpoint").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`),
@@ -508,6 +575,39 @@ export const runCandidates = pgTable(
   },
   (t) => [uniqueIndex("run_candidate_uniq").on(t.runId, t.companyId), index("run_candidate_status_idx").on(t.runId, t.status)],
 );
+
+/** Discovery work units of a run (harvests, scouting, hunts) — finalisation waits until all are closed. */
+export const runWork = pgTable(
+  "run_work",
+  {
+    id: id(),
+    runId: uuid("run_id").notNull().references(() => researchRuns.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // harvest | scout | hunt
+    sourceId: uuid("source_id"),
+    params: jsonb("params").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    status: text("status").notNull().default("pending"), // pending | done | failed
+    found: integer("found").notNull().default(0),
+    newCandidates: integer("new_candidates").notNull().default(0),
+    error: text("error"),
+    round: integer("round").notNull().default(1),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("run_work_run_idx").on(t.runId, t.status)],
+);
+
+/** Encrypted integration secrets managed through the setup wizard (AES-256-GCM). */
+export const secrets = pgTable("secrets", {
+  key: text("key").primaryKey(),
+  ciphertext: text("ciphertext").notNull(),
+  iv: text("iv").notNull(),
+  tag: text("tag").notNull(),
+  last4: text("last4"),
+  updatedBy: text("updated_by"),
+  updatedAt: updatedAt(),
+  validatedAt: ts("validated_at"),
+  validationStatus: text("validation_status"), // ok | failed
+  validationMessage: text("validation_message"),
+});
 
 export const agentTasks = pgTable(
   "agent_tasks",
@@ -622,6 +722,8 @@ export const deliveries = pgTable(
 
 export const feedbackImports = pgTable("feedback_imports", {
   id: id(),
+  /** feedback | historical_list | customers | opportunities | rejected */
+  kind: text("kind").notNull().default("feedback"),
   fileName: text("file_name").notNull(),
   uploadedBy: text("uploaded_by").notNull(),
   status: text("status").notNull().default("preview"), // preview | committed | discarded

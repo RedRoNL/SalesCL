@@ -1,29 +1,26 @@
 import * as client from "openid-client";
 import { env } from "@/lib/env";
+import { entraConfig } from "@/lib/secrets";
 
 /**
  * Microsoft Entra ID sign-in via OpenID Connect (authorization code + PKCE).
  * Roles are derived from Entra group membership (configured group IDs) or
  * from app roles ("SalesArmy.Admin", "SalesArmy.Analyst").
  */
-let configPromise: Promise<client.Configuration> | null = null;
+let configCache: { sig: string; p: Promise<client.Configuration> } | null = null;
 
-export function entraConfigured(): boolean {
-  const e = env();
-  return Boolean(e.ENTRA_TENANT_ID && e.ENTRA_CLIENT_ID && e.ENTRA_CLIENT_SECRET);
+export async function entraConfigured(): Promise<boolean> {
+  return (await entraConfig()).configured;
 }
 
 export async function getOidcConfig(): Promise<client.Configuration> {
-  const e = env();
-  if (!entraConfigured()) throw new Error("Microsoft Entra ID is not configured");
-  if (!configPromise) {
-    configPromise = client.discovery(
-      new URL(`https://login.microsoftonline.com/${e.ENTRA_TENANT_ID}/v2.0`),
-      e.ENTRA_CLIENT_ID!,
-      e.ENTRA_CLIENT_SECRET!,
-    );
+  const e = await entraConfig();
+  if (!e.configured) throw new Error("Microsoft Entra ID is not configured");
+  const sig = `${e.tenantId}|${e.clientId}|${e.clientSecret!.slice(-6)}`;
+  if (!configCache || configCache.sig !== sig) {
+    configCache = { sig, p: client.discovery(new URL(`https://login.microsoftonline.com/${e.tenantId}/v2.0`), e.clientId!, e.clientSecret!) };
   }
-  return configPromise;
+  return configCache.p;
 }
 
 export function redirectUri(): string {
@@ -67,7 +64,7 @@ export async function completeAuthorization(currentUrl: URL, codeVerifier: strin
   if (!claims) throw new Error("No ID token claims");
   const email = String(claims.email ?? claims.preferred_username ?? "").toLowerCase();
   if (!email) throw new Error("Entra ID token has no email/UPN");
-  if (String(claims.tid) !== env().ENTRA_TENANT_ID) throw new Error("Token tenant mismatch");
+  if (String(claims.tid) !== (await entraConfig()).tenantId) throw new Error("Token tenant mismatch");
   return {
     oid: String(claims.oid ?? claims.sub),
     email,
@@ -77,9 +74,9 @@ export async function completeAuthorization(currentUrl: URL, codeVerifier: strin
   };
 }
 
-export function roleFromEntra(id: Pick<EntraIdentity, "groups" | "roles">): "admin" | "analyst" | "viewer" {
-  const e = env();
-  if (id.roles.includes("SalesArmy.Admin") || (e.ENTRA_ADMIN_GROUP_ID && id.groups.includes(e.ENTRA_ADMIN_GROUP_ID))) return "admin";
-  if (id.roles.includes("SalesArmy.Analyst") || (e.ENTRA_ANALYST_GROUP_ID && id.groups.includes(e.ENTRA_ANALYST_GROUP_ID))) return "analyst";
+export async function roleFromEntra(id: Pick<EntraIdentity, "groups" | "roles">): Promise<"admin" | "analyst" | "viewer"> {
+  const e = await entraConfig();
+  if (id.roles.includes("SalesArmy.Admin") || (e.adminGroupId && id.groups.includes(e.adminGroupId))) return "admin";
+  if (id.roles.includes("SalesArmy.Analyst") || (e.analystGroupId && id.groups.includes(e.analystGroupId))) return "analyst";
   return "viewer";
 }

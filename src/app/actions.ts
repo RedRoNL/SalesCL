@@ -16,7 +16,6 @@ import { canonicalDomain, normalizeCompanyName } from "@/domain/normalize";
 import { ScoringWeightsSchema, ScoringThresholdsSchema, ScoringRulesSchema } from "@/domain/scoring";
 import { postChatMessage } from "@/pipeline/chat";
 import { AGENT_IDS } from "@/agents/types";
-import { importRelationships } from "@/lib/relationshipImport";
 
 async function requireActionUser(role: Role) {
   const u = await getCurrentUser();
@@ -206,16 +205,6 @@ export async function sendChatAction(threadId: string, agentId: string, message:
   await postChatMessage({ threadId: z.string().uuid().parse(threadId), agentId: id, userId: u.sub, userRole: u.role, message: text });
 }
 
-export async function importRelationshipsAction(fd: FormData) {
-  const u = await requireActionUser("admin");
-  const file = fd.get("file");
-  if (!(file instanceof File)) throw new Error("Geen bestand");
-  const kind = z.enum(["customer", "active_opportunity", "prior_prospect", "rejected"]).parse(fd.get("kind"));
-  const res = await importRelationships(Buffer.from(await file.arrayBuffer()), file.name, kind, actor(u));
-  await audit({ actorType: "user", actorId: u.sub, action: "relationships.imported", details: { kind, ...res } });
-  revalidatePath("/settings");
-  revalidatePath("/prospects");
-}
 
 export async function setIndustryTierAction(industryId: number, fd: FormData) {
   const u = await requireActionUser("admin");

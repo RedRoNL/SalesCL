@@ -11,12 +11,16 @@ export interface CompanyIdentity {
   groupId?: string | null;
   groupName?: string | null;
   groupDomain?: string | null;
+  /** Additional known domains (incl. outdated/historical ones). */
+  domains?: string[];
+  /** Normalised public phone numbers (switchboard). */
+  phones?: string[];
 }
 
 export interface DuplicateMatch {
   matchedId?: string;
   matchedName: string;
-  reason: "kvk" | "domain" | "exact_name" | "fuzzy_name" | "parent_group" | "alias";
+  reason: "kvk" | "domain" | "phone" | "exact_name" | "fuzzy_name" | "parent_group" | "alias";
   similarity: number;
 }
 
@@ -57,6 +61,9 @@ export function findDuplicate(candidate: CompanyIdentity, existing: CompanyIdent
 
     const eDomain = canonicalDomain(e.domain ?? null);
     if (cDomain && eDomain && cDomain === eDomain) return { matchedId: e.id, matchedName: e.name, reason: "domain", similarity: 1 };
+    if (cDomain && (e.domains ?? []).some((d) => canonicalDomain(d) === cDomain)) return { matchedId: e.id, matchedName: e.name, reason: "domain", similarity: 0.99 };
+    const cPhones = new Set([...(candidate.phones ?? [])]);
+    if (cPhones.size && (e.phones ?? []).some((p) => cPhones.has(p))) best = pick(best, { matchedId: e.id, matchedName: e.name, reason: "phone", similarity: 0.97 });
 
     // Parent / subsidiary duplication: same group, or candidate's domain is the group's domain.
     if (candidate.groupId && e.groupId && candidate.groupId === e.groupId) {

@@ -30,7 +30,7 @@ export class FirecrawlProvider implements SearchProvider, FetchProvider {
 
   async fetch(url: string) {
     assertPublicHttpUrl(url);
-    const doc = await this.client.scrape(url, { formats: ["markdown"], onlyMainContent: true });
+    const doc = await this.client.scrape(url, { formats: ["markdown", "links"], onlyMainContent: false });
     return {
       page: {
         url,
@@ -38,6 +38,7 @@ export class FirecrawlProvider implements SearchProvider, FetchProvider {
         status: (doc.metadata as { statusCode?: number } | undefined)?.statusCode ?? 200,
         title: doc.metadata?.title ?? null,
         text: doc.markdown ?? "",
+        links: (doc.links ?? []).slice(0, 400).map((href) => ({ href, text: "" })),
       },
       units: 1,
     };

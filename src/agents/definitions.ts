@@ -1,6 +1,16 @@
 import type { AgentDefinition, AgentId, AgentTask } from "./types";
 import * as S from "./schemas";
 
+/**
+ * The eleven Sales Army agents (v2). Design principles after the engineering review:
+ *  - Deterministic code does everything that needs no judgement (crawling, DNS, regex extraction,
+ *    dedup, exclusions, scoring, eligibility, ranking, export).
+ *  - Per-company model work is ONE cheap extraction call over pages already retrieved; tool-using
+ *    agents are activated dynamically only for promising candidates with real gaps.
+ *  - Strategic agents (CSO, Market Intelligence, Hunters) work on SOURCES and STRATEGY, not on
+ *    individual companies. The CSO never touches single companies in the pipeline.
+ *  - No two agents retrieve the same page: all research goes through one cached ResearchService.
+ */
 const READ_RESEARCH = ["web_search", "fetch_page", "lookup_company_db"] as const;
 
 const chat = (extraTools: AgentTask["tools"] = []): AgentTask => ({
@@ -12,27 +22,26 @@ const chat = (extraTools: AgentTask["tools"] = []): AgentTask => ({
     "Je beantwoordt een vraag van een Cloud Life-medewerker. Doe echt onderzoek met je tools als de vraag feiten vereist; " +
     "onderbouw bevindingen met source_ids. Wees eerlijk over onzekerheid en ontbrekende gegevens. Antwoord in het Nederlands.",
   tools: [...READ_RESEARCH, "get_company_dossier", "get_commercial_performance", "get_market_map", "get_run_status", ...extraTools],
-  maxTurns: 14,
+  maxTurns: 12,
+  skills: "all",
 });
 
-const discoveryInstructions = (band: string) =>
-  `Ontdek echte Nederlandse organisaties (${band} medewerkers) in de opgegeven sector. Werkwijze:
-1. Bedenk gevarieerde, adaptieve zoekopdrachten (brancheverenigingen, ledenlijsten, branche-rankings, vakpublicaties,
-   aanbestedingen, jaarverslagen, "top 100"-lijsten, vacaturesites voor IT-rollen). Herhaal geen eerdere queries.
-2. Haal relevante bronpagina's op met fetch_page en extraheer bedrijfsnamen uit de opgehaalde inhoud.
-3. Controleer met lookup_company_db of een bedrijf al bekend/uitgesloten is en sla die over.
-4. Lever alleen kandidaten die je in een opgehaalde bron hebt gezien (sourceId verplicht waar mogelijk). Geen namen uit geheugen.
-5. Sluit concurrenten, MSP's, IT-consultancy, bureaus (sales/marketing/recruitment) en kleine softwarestartups uit.
-Lever liever minder, maar echte kandidaten.`;
+const huntInstructions = (focus: string) => `Je zoekt organisaties die NIET via standaard zoekopdrachten of bekende ledenlijsten te vinden zijn. Focus: ${focus}
+Werkwijze: gebruik gevarieerde, specifieke zoekopdrachten; haal bronnen op met fetch_page; lever alleen organisaties die je in een
+opgehaalde bron hebt gezien (sourceId verplicht). Noem in poolsUsed elke bronpagina met een LIJST van organisaties die het waard
+is om later opnieuw te oogsten — die wordt permanent in de bronnendatabase opgenomen. Herhaal geen eerdere zoekopdrachten
+(previousQueries). Sluit concurrenten, MSP's, IT-consultancy, bureaus en kleine softwarestartups uit. Geen namen uit geheugen.`;
 
-const huntTask = (band: string): AgentTask => ({
+const hunt = (focus: string, tier: AgentTask["modelTier"] = "standard"): AgentTask => ({
   type: "hunt",
-  description: `Kandidaten vinden (${band})`,
+  description: `Gerichte prospectjacht (${focus.split(":")[0]})`,
   input: S.DiscoveryInput,
   output: S.DiscoveryOutput,
-  instructions: discoveryInstructions(band),
+  instructions: huntInstructions(focus),
   tools: [...READ_RESEARCH],
-  maxTurns: 24,
+  maxTurns: 14,
+  modelTier: tier,
+  skills: "all",
 });
 
 export const AGENTS: Record<AgentId, AgentDefinition> = {
@@ -41,16 +50,16 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
     number: 1,
     name: "Chief Sales Officer",
     nameNl: "Chief Sales Officer",
-    mission: "Leidt het Sales Army: bepaalt de wekelijkse strategie, verdeelt werk, bewaakt het ICP en keurt de eindlijst goed.",
+    mission: "Leidt het Sales Army strategisch: kiest sectoren en bronnenmix per week, bewaakt het ICP, beoordeelt de eindlijst en schrijft de managementsamenvatting. Micromanaget geen individuele bedrijven.",
     responsibilities: [
-      "Wekelijkse onderzoeksstrategie bepalen", "Onderzoekstaken toewijzen", "Prioriteitssectoren kiezen", "Voortgang bewaken",
-      "Tegenstrijdige bevindingen oplossen", "ICP handhaven", "Specialisten coördineren", "Wekelijkse lijst goedkeuren",
-      "Strategie optimaliseren op basis van commerciële resultaten",
+      "Wekelijkse onderzoeksstrategie en sectorquota bepalen", "Bronnenmix sturen op basis van bronrendement", "Voortgang en tekorten bewaken",
+      "ICP handhaven", "Gebruikersopdrachten delegeren in HQ", "Wekelijkse lijst beoordelen en samenvatten", "Strategie optimaliseren op basis van commerciële resultaten",
     ],
     skills: ["revops", "prospecting", "sales-army-icp"],
     tools: ["get_commercial_performance", "get_market_map", "get_run_status", "lookup_company_db", "get_company_dossier", "delegate_to_agent", "start_research_run", "propose_recommendation", "web_search", "fetch_page"],
     modelTier: "strong",
-    qualityStandards: ["Strategie is onderbouwd met prestatiedata of expliciet als hypothese gemarkeerd", "Nooit kwaliteit opofferen voor aantallen", "Tekorten worden expliciet gerapporteerd"],
+    activation: "1× per run (strategie) + 1× per run (lijstbeoordeling) + HQ-gesprekken",
+    qualityStandards: ["Strategie onderbouwd met prestatiedata of expliciet als hypothese", "Nooit kwaliteit opofferen voor aantallen", "Tekorten expliciet rapporteren"],
     escalationRules: ["Budget >80% verbruikt → pauzeren en beheerder informeren", "Wijzigingen aan harde uitsluitingen/juridische regels → menselijke goedkeuring", "QA-afwijzingspercentage >50% → strategie herzien"],
     kpis: [{ key: "appointments_per_week", label: "Afspraken per week" }, { key: "qualified_ratio", label: "Gekwalificeerd/onderzocht" }, { key: "cost_per_qualified", label: "Kosten per gekwalificeerde prospect" }],
     tasks: {
@@ -59,31 +68,34 @@ export const AGENTS: Record<AgentId, AgentDefinition> = {
         description: "Wekelijkse onderzoeksstrategie",
         input: S.WeeklyPlanInput,
         output: S.WeeklyPlanOutput,
-        instructions: `Stel de wekelijkse strategie op. Analyseer eerdere weken en belbureau-feedback (get_commercial_performance),
-de marktdekking (get_market_map) en onderbenutte sectoren. Verdeel quota over sectoren en hunters zodat
-~70% uit 300–2.000 FTE komt, ~20–25% uit 2.000–5.000 FTE en groei (50–300) alleen bij tekort of sterke signalen.
-Totaal quota ≈ doel × kandidatenmultiplier. Onderscheid bewezen prestaties van hypotheses. Respecteer opgegeven beperkingen.`,
+        instructions: `Stel de wekelijkse strategie op op basis van prestaties (met betrouwbaarheidsintervallen), marktdekking en bronrendement
+(sourceStats: welke bronnen leveren unieke én gekwalificeerde bedrijven). Verdeel quota over sectoren: ~70% 300–2.000 FTE,
+~20–25% 2.000–5.000 FTE; groei (50–300) alleen bij tekort. Kies searchThemes die NIEUWE bronnen kunnen opleveren (beurzen,
+regionale netwerken, rankings, groepsstructuren, Microsoft-referenties, vacatures). Onderscheid bewezen prestaties van hypotheses.`,
         tools: ["get_commercial_performance", "get_market_map", "get_run_status"],
-        maxTurns: 8,
+        maxTurns: 4,
+        effort: "medium",
+        skills: "all",
       },
       approve_list: {
         type: "approve_list",
         description: "Weeklijst beoordelen en managementsamenvatting",
         input: S.ListApprovalInput,
         output: S.ListApprovalOutput,
-        instructions: `Beoordeel de door QA goedgekeurde, gerankte weeklijst. Controleer ICP-verdeling, sectorspreiding,
-kwaliteit, tekort en risico's. Schrijf een beknopte Nederlandse managementsamenvatting (markdown): resultaten,
-kosten, tekort en oorzaak, opvallende kansen, aanbevelingen. Je keurt goed "voor menselijke review" —
-een mens geeft de definitieve exportgoedkeuring.`,
-        tools: ["get_commercial_performance", "get_run_status"],
-        maxTurns: 6,
+        instructions: `Beoordeel de door QA goedgekeurde, gerankte weeklijst: ICP-verdeling, sectorspreiding, kwaliteit, tekort en risico's.
+Schrijf een beknopte Nederlandse managementsamenvatting (markdown): resultaten, kosten, tekort en oorzaak, best presterende bronnen,
+aanbevelingen. Je keurt goed "voor menselijke review" — een mens geeft de definitieve exportgoedkeuring.`,
+        tools: [],
+        maxTurns: 2,
+        effort: "medium",
+        skills: "project",
       },
       chat: {
         ...chat(["delegate_to_agent", "start_research_run", "propose_recommendation"]),
         instructions:
           "Je bent de leider van het Sales Army. Beantwoord vragen zelf of delegeer met delegate_to_agent naar de juiste specialist(en) en vat hun resultaten samen. " +
-          "Voor grotere opdrachten (bijv. '100 maakbedrijven vinden') start je een echt onderzoeksrun met start_research_run en meld je het run-ID. Antwoord in het Nederlands.",
-        maxTurns: 16,
+          "Voor grotere opdrachten (bijv. '100 maakbedrijven vinden') start je een echte onderzoeksrun met start_research_run en meld je het run-ID. Antwoord in het Nederlands.",
+        maxTurns: 14,
       },
     },
   },
@@ -93,23 +105,48 @@ een mens geeft de definitieve exportgoedkeuring.`,
     number: 2,
     name: "Market Intelligence Director",
     nameNl: "Directeur Marktinformatie",
-    mission: "Onderzoekt Nederlandse sectoren, vindt prospectpools en houdt een permanente marktkaart bij.",
-    responsibilities: ["Sectoren en onderbediende markten analyseren", "Prospectpools ontdekken via verenigingen, directories, vakbladen, rankings en openbare bronnen", "Marktkaart bijhouden (onderzocht, resterend, prestaties)", "Voorkomen dat steeds dezelfde voor de hand liggende bedrijven worden onderzocht"],
+    mission: "Bouwt en onderhoudt de permanente bronnendatabase: vindt nieuwe ontdekkingsbronnen (verenigingen, beurzen, rankings, bedrijventerreinen, publicaties, referenties) en haalt organisaties uit bronpagina's.",
+    responsibilities: ["Nieuwe ontdekkingsbronnen vinden per sector", "Lijsten met organisaties uit bronpagina's extraheren (goedkope modeltaak)", "Bronrendement en marktdekking bewaken", "Uitgeputte bronnen herkennen"],
     skills: ["prospecting", "competitor-profiling", "firecrawl-search", "customer-research"],
     tools: [...READ_RESEARCH, "get_market_map", "get_commercial_performance", "propose_recommendation"],
     modelTier: "standard",
-    qualityStandards: ["Elke pool heeft een bron-URL", "Geen herhaling van eerder gebruikte queries", "Uitputtingsschattingen gemarkeerd als onzeker"],
-    escalationRules: ["Sector levert 2 weken op rij <10% kwalificatie → aanbevelen te deprioriteren", "Betaalde databron nodig → aanbeveling ter goedkeuring"],
-    kpis: [{ key: "new_pools", label: "Nieuwe prospectpools" }, { key: "candidate_yield", label: "Kandidaten per query" }],
+    activation: "Scouting: alleen als een sector te weinig productieve bronnen heeft. Lijstextractie: per geoogste bronpagina waar deterministische linkextractie onvoldoende oplevert.",
+    qualityStandards: ["Elke bron heeft een opgehaalde URL of herbruikbare zoekopdracht", "Namen alleen zoals letterlijk op de pagina", "Uitputtingsschattingen gemarkeerd als onzeker"],
+    escalationRules: ["Bron levert 2 oogsten op rij 0 nieuwe bedrijven → uitgeput", "Betaalde databron nodig → aanbeveling ter goedkeuring"],
+    kpis: [{ key: "new_sources", label: "Nieuwe productieve bronnen" }, { key: "unique_per_source", label: "Unieke bedrijven per bron" }],
     tasks: {
-      discover_pools: {
-        type: "discover_pools",
-        description: "Prospectpools en kandidaten ontdekken voor een sector",
-        input: S.DiscoveryInput,
-        output: S.DiscoveryOutput,
-        instructions: discoveryInstructions("50–5.000") + "\nRapporteer per gebruikte pool het nut, zodat de marktkaart leert welke bronnen werken.",
-        tools: [...READ_RESEARCH],
-        maxTurns: 24,
+      scout_sources: {
+        type: "scout_sources",
+        description: "Nieuwe ontdekkingsbronnen vinden",
+        input: S.ScoutInput,
+        output: S.ScoutOutput,
+        instructions: `Vind NIEUWE, herbruikbare bronnen die lijsten met Nederlandse organisaties in deze sector bevatten en die niet in existingSources
+staan: ledenlijsten van branche- en regionale verenigingen, exposanten-/standhouderslijsten van vakbeurzen, branche-rankings en
+"top 100"-overzichten, bedrijventerreinen en parkmanagement, regionale netwerken (bijv. ontwikkelingsmaatschappijen), vakbladen met
+bedrijvenoverzichten, groepsstructuren ("onze werkmaatschappijen"), Microsoft-klantverhalen en partnerreferenties (klantcases noemen
+de klant), aanbestedende diensten. Haal kandidaat-pagina's op met fetch_page om te bevestigen dat er werkelijk een lijst op staat;
+lever die URL. Voor bronnen die alleen via zoeken werken: lever een zoekopdracht met {sector}. Geen social media, geen vacaturesites
+waarvan de voorwaarden scrapen verbieden.`,
+        tools: ["web_search", "fetch_page"],
+        maxTurns: 10,
+        effort: "medium",
+        skills: "all",
+      },
+      extract_companies: {
+        type: "extract_companies",
+        description: "Organisaties uit een bronpagina extraheren",
+        input: S.ListExtractInput,
+        output: S.ListExtractOutput,
+        instructions: `Extraheer de organisaties die deze pagina opsomt of noemt (leden, exposanten, klanten in een case, werkgever van een
+vacature, dochterbedrijven, gerankte bedrijven, aanbestedende dienst). Neem namen LETTERLIJK over zoals ze op de pagina staan; voeg
+een website alleen toe als die op de pagina staat. Sla de organisatie die de pagina publiceert over (tenzij het een vacature of eigen
+case is), net als leveranciers/partners/IT-dienstverleners. Lever direct met submit_result.`,
+        tools: [],
+        maxTurns: 2,
+        modelTier: "fast",
+        effort: "low",
+        skills: "none",
+        maxTokens: 6000,
       },
       chat: chat(["propose_recommendation"]),
     },
@@ -117,49 +154,53 @@ een mens geeft de definitieve exportgoedkeuring.`,
 
   enterprise_hunter: {
     id: "enterprise_hunter", number: 3, name: "Enterprise Hunter", nameNl: "Enterprise Hunter",
-    mission: "Vindt Nederlandse organisaties met 2.000–5.000 medewerkers met hoge terugkerende omzetpotentie.",
-    responsibilities: ["Hoofdkantoren en groepsstructuren onderzoeken", "IT-eigenaarschap en inkoopbevoegdheid vaststellen", "Volwassenheid security en regeldruk inschatten", "Hoogwaardige kansen prioriteren"],
+    mission: "Vindt Nederlandse organisaties met 2.000–5.000 medewerkers via groepsstructuren, jaarverslagen en rankings — en stelt vast waar IT wordt ingekocht.",
+    responsibilities: ["Groepsstructuren en NL-hoofdkantoren onderzoeken", "Jaarverslagen en rankings als bron gebruiken", "IT-inkoopbevoegdheid in NL bevestigen", "Hoogwaardige terugkerende kansen vinden"],
     skills: ["prospecting", "lead-research-assistant", "firecrawl-search"],
     tools: [...READ_RESEARCH],
     modelTier: "standard",
+    activation: "1× per run als de strategie enterprise-quotum heeft",
     qualityStandards: ["Alleen entiteiten met NL IT-inkoopbevoegdheid", "Groepsduplicaten vermijden"],
     escalationRules: ["IT centraal in buitenland → niet aandragen"],
     kpis: [{ key: "qualified_ratio", label: "Kwalificatieratio" }],
-    tasks: { hunt: huntTask("2.000–5.000"), chat: chat() },
+    tasks: { hunt: hunt("enterprise 2.000–5.000 FTE: groepsstructuren, jaarverslagen, rankings van grootste werkgevers, NL-hoofdkantoren van groepen"), chat: chat() },
   },
   midmarket_hunter: {
     id: "midmarket_hunter", number: 4, name: "Midmarket Hunter", nameNl: "Midmarket Hunter",
-    mission: "Levert het grootste deel van de pijplijn: gevestigde NL-organisaties met 300–2.000 medewerkers.",
-    responsibilities: ["Gevestigde bedrijven met relevante Microsoft-omgeving vinden", "Behoefte aan externe Microsoft-securityexpertise inschatten"],
+    mission: "Vindt moeilijk vindbare middelgrote organisaties (300–2.000 FTE) via signaalgedreven zoekwerk: Microsoft-vacatures, partnerreferenties, regionale netwerken en vakpublicaties.",
+    responsibilities: ["Signaalgedreven ontdekking (vacatures met Microsoft-technologie, partnercases)", "Regionale en sectorspecifieke netwerken aanboren", "Gaten opvullen die de bronnendatabase niet dekt"],
     skills: ["prospecting", "lead-research-assistant", "firecrawl-search"],
     tools: [...READ_RESEARCH],
     modelTier: "standard",
+    activation: "Wanneer een sector onvoldoende kandidaten uit bronnen oplevert, en in de tekortronde",
     qualityStandards: ["Volume nooit boven kwaliteit"],
     escalationRules: ["Pool uitgeput → Market Intelligence Director informeren via notities"],
     kpis: [{ key: "qualified_ratio", label: "Kwalificatieratio" }],
-    tasks: { hunt: huntTask("300–2.000"), chat: chat() },
+    tasks: { hunt: hunt("midmarket 300–2.000 FTE: vacatures die Microsoft 365/Intune/Entra/Defender/Purview noemen, klantcases van Microsoft-partners, regionale ondernemersnetwerken, vakbladen"), chat: chat() },
   },
   growth_market_hunter: {
     id: "growth_market_hunter", number: 5, name: "Growth Market Hunter", nameNl: "Groeimarkt Hunter",
     mission: "Onderzoekt organisaties met 50–300 medewerkers — alleen bij tekort in de primaire markt of sterke koopsignalen.",
-    responsibilities: ["Alleen geactiveerd bij tekort of sterke signalen", "Uitzonderlijke fit aantonen"],
+    responsibilities: ["Alleen geactiveerd in de tekortronde", "Uitzonderlijke fit aantonen (gereguleerd, complexe Microsoft-omgeving, sterk signaal)"],
     skills: ["prospecting", "lead-research-assistant"],
     tools: [...READ_RESEARCH],
     modelTier: "fast",
+    activation: "Alleen in de tekortronde van een run",
     qualityStandards: ["Alleen kandidaten met sterk signaal of uitzonderlijke fit"],
     escalationRules: ["Niet gebruiken om lijsten op te vullen"],
     kpis: [{ key: "qualified_ratio", label: "Kwalificatieratio" }],
-    tasks: { hunt: { ...huntTask("50–300"), instructions: discoveryInstructions("50–300") + "\nDraag alleen bedrijven aan met een concreet koopsignaal of uitzonderlijke fit (gereguleerd, complexe Microsoft-omgeving)." }, chat: chat() },
+    tasks: { hunt: hunt("groei 50–300 FTE, alleen met concreet koopsignaal of gereguleerde data", "fast"), chat: chat() },
   },
 
   microsoft_intelligence_specialist: {
     id: "microsoft_intelligence_specialist", number: 6, name: "Microsoft Intelligence Specialist", nameNl: "Microsoft Intelligence Specialist",
-    mission: "Stelt vast of prospects relevante Microsoft-technologie gebruiken, met eerlijke bewijsclassificatie.",
-    responsibilities: ["M365, Entra ID, Azure, Intune, Defender, Purview, Copilot, Exchange Online, SharePoint onderzoeken", "Microsoft-gerelateerde vacatures en klantcases vinden", "Passieve DNS/mail-indicatoren interpreteren", "Classificeren: bevestigd / sterk / zwak / onbekend / tegengesproken"],
+    mission: "Zoekt aanvullend openbaar bewijs voor Microsoft-technologie wanneer de deterministische DNS- en website-analyse geen sterk bewijs opleverde.",
+    responsibilities: ["Microsoft-vacatures, klantverhalen, partnerreferenties en publicaties vinden", "Classificeren per technologie: bevestigd / sterk / zwak / onbekend / tegengesproken"],
     skills: ["sales-army-microsoft-evidence", "firecrawl-scrape"],
     tools: ["web_search", "fetch_page", "dns_lookup"],
     modelTier: "fast",
-    qualityStandards: ["Nooit aannames als bevestigd presenteren", "Bevestigd alleen met letterlijk citaat uit officiële bron/vacature/klantcase", "MX ≠ Intune/Defender/Purview"],
+    activation: "Alleen voor kansrijke kandidaten waarvan Microsoft 365-bewijs na screening zwakker is dan 'sterk aangewezen'",
+    qualityStandards: ["Nooit aannames als bevestigd presenteren", "Bevestigd alleen met letterlijk citaat uit gezaghebbende bron", "MX ≠ Intune/Defender/Purview"],
     escalationRules: ["Tegenstrijdig bewijs → beide vermelden, laagste classificatie"],
     kpis: [{ key: "evidence_coverage", label: "% met Microsoft-bewijs" }, { key: "qa_tech_pass", label: "QA-pass technologieclaims" }],
     tasks: {
@@ -168,15 +209,15 @@ een mens geeft de definitieve exportgoedkeuring.`,
         description: "Microsoft-technologiebewijs verzamelen",
         input: S.MicrosoftInput,
         output: S.MicrosoftOutput,
-        instructions: `De deterministische DNS-analyse is al uitgevoerd (dnsFindings) — herhaal die niet en herclassificeer die niet.
-Zoek aanvullend openbaar bewijs: vacatures van het bedrijf die Microsoft-technologie noemen (Intune, Defender, Purview,
-Entra ID, Azure, Copilot), officiële Microsoft-klantverhalen, eigen website, jaarverslagen, aanbestedingen.
-Gebruik zoekopdrachten als: "<bedrijf> vacature Intune", "<bedrijf> Microsoft 365", "site:<domein> Microsoft".
-Voor elke claim: technologie, classificatie, sourceId en een letterlijk citaat. "confirmed" alleen als de bron het
-expliciet en actueel bevestigt. Vacature die de technologie vraagt = sterk aanwijzing. Code valideert en kan
-classificaties verlagen.`,
+        instructions: `De DNS-analyse en de scan van de eigen website zijn al uitgevoerd (dnsFindings) — herhaal en herclassificeer die niet.
+Zoek gericht (max. 3 zoekopdrachten): vacatures van dit bedrijf die Microsoft-technologie noemen, Microsoft-klantverhalen,
+klantcases van Microsoft-partners waarin dit bedrijf de klant is, jaarverslag/IT-publicaties. Per claim: technologie, classificatie,
+sourceId en letterlijk citaat. "confirmed" alleen als de bron het expliciet en actueel bevestigt. Code valideert en kan verlagen.`,
         tools: ["web_search", "fetch_page"],
-        maxTurns: 12,
+        maxTurns: 6,
+        effort: "low",
+        skills: "project",
+        maxTokens: 6000,
       },
       chat: chat(["dns_lookup"]),
     },
@@ -184,11 +225,12 @@ classificaties verlagen.`,
 
   buying_signal_analyst: {
     id: "buying_signal_analyst", number: 7, name: "Buying Signal Analyst", nameNl: "Koopsignaalanalist",
-    mission: "Identificeert commercieel relevante gebeurtenissen die de vraag naar Cloud Life-diensten vergroten.",
-    responsibilities: ["Copilot-adoptie, M365-migraties, digitale transformatie, nieuwe IT-leiding, securityvacatures, overnames, groei, regeldruk (NIS2/DORA), data governance, IT-modernisering, openbaar gemelde incidenten"],
+    mission: "Identificeert recente, onderbouwde gebeurtenissen die de vraag naar Protect 365 of Purview Care vergroten.",
+    responsibilities: ["Copilot-adoptie, M365-migraties, nieuwe IT-leiding, securityvacatures, overnames, NIS2/DORA, data governance, IT-modernisering, openbare incidenten"],
     skills: ["prospecting", "firecrawl-search"],
     tools: ["web_search", "fetch_page"],
     modelTier: "fast",
+    activation: "Alleen voor kandidaten met voorlopige fit ≥ drempel (instelling signalsMinFit); signalen van de eigen website zijn dan al deterministisch gevonden",
     qualityStandards: ["Elk signaal: bron, datum, uitleg, commerciële relevantie", "Geen speculatie over zwakheden", "Incidenten nooit als voorwendsel"],
     escalationRules: ["Signaal ouder dan 12 maanden → lage relevantie"],
     kpis: [{ key: "signal_coverage", label: "% met actueel signaal" }, { key: "signal_conversion", label: "Afspraakratio met signaal" }],
@@ -198,11 +240,14 @@ classificaties verlagen.`,
         description: "Koopsignalen vinden",
         input: S.SignalsInput,
         output: S.SignalsOutput,
-        instructions: `Zoek recente (bij voorkeur <12 maanden) openbare signalen. Elk signaal heeft verplicht een sourceId van een
-opgehaalde pagina, een datum (of null als echt onbekend), uitleg en commerciële relevantie voor Cloud Life.
-Bij publieke incidenten: alleen feitelijk vermelden; geen speculatie over beveiligingszwaktes. Geen signaal = lege lijst.`,
+        instructions: `Zoek recente (<12 maanden) openbare signalen buiten de eigen website (nieuws, persberichten, jaarverslag). Max. 2 zoekopdrachten.
+Elk signaal heeft verplicht een sourceId van een opgehaalde pagina, een datum (of null), uitleg en relevantie voor Cloud Life.
+Bij publieke incidenten: alleen feitelijk; geen speculatie. Geen signaal = lege lijst.`,
         tools: ["web_search", "fetch_page"],
-        maxTurns: 10,
+        maxTurns: 6,
+        effort: "low",
+        skills: "none",
+        maxTokens: 5000,
       },
       chat: chat(),
     },
@@ -210,30 +255,46 @@ Bij publieke incidenten: alleen feitelijk vermelden; geen speculatie over beveil
 
   company_research_specialist: {
     id: "company_research_specialist", number: 8, name: "Company Research Specialist", nameNl: "Bedrijfsonderzoeker",
-    mission: "Onderzoekt en verifieert individuele bedrijfsdossiers. Onbekend blijft onbekend.",
-    responsibilities: ["Officiële naam, handelsnaam, website, domein, sector, HQ, NL-vestiging, medewerkers, moederbedrijf, dochters, rechtsvorm, openbaar telefoonnummer, relevante IT-rollen, bronnen, onderzoeksdatum en betrouwbaarheid"],
+    mission: "Zet opgehaalde pagina's om in een geverifieerd bedrijfsdossier (één goedkope extractie) en vult alleen bij kansrijke kandidaten gericht de kritieke gaten.",
+    responsibilities: ["Officiële naam, sector, omvang, groep, inkoopbevoegdheid, rechtsvorm, compliance-relevantie en IT-rollen vastleggen met citaat", "Gericht gaten vullen (medewerkers, rechtsvorm, telefoonnummer, groepsstructuur)"],
     skills: ["lead-research-assistant", "prospecting", "firecrawl-scrape"],
     tools: ["web_search", "fetch_page", "registry_lookup", "lookup_company_db"],
     modelTier: "standard",
-    qualityStandards: ["Nooit ontbrekende informatie verzinnen", "Telefoonnummer alleen als openbaar algemeen bedrijfsnummer uit opgehaalde bron", "Medewerkersaantal met bron, anders null"],
+    activation: "Extractie: elke kandidaat die de gratis screening doorstaat. Gatenvulling: alleen kansrijke kandidaten met kritieke gaten na KvK-lookup",
+    qualityStandards: ["Nooit ontbrekende informatie verzinnen", "Elk veld met letterlijk citaat uit een opgehaalde bron", "Onbekend blijft null"],
     escalationRules: ["Groepsstructuur onduidelijk → purchasingAuthority 'unknown'"],
     kpis: [{ key: "field_completeness", label: "Veldvolledigheid" }, { key: "qa_pass", label: "QA-pass" }],
     tasks: {
-      enrich_company: {
-        type: "enrich_company",
-        description: "Bedrijfsdossier verrijken en verifiëren",
-        input: S.EnrichInput,
-        output: S.EnrichOutput,
-        instructions: `Bouw een geverifieerd dossier op basis van opgehaalde bronnen: officiële website (contact-, over-ons-, vacature- en
-juridische pagina's: KvK-nummer en rechtsvorm staan vaak in de footer/colofon/algemene voorwaarden), KvK-register (indien
-beschikbaar), jaarverslag, brancheverenigingen, nieuws. Bepaal businessCategory eerlijk (MSP/IT-consultancy/bureau = uitsluiting).
-purchasingAuthority: nl_independent (NL zelfstandig), nl_group_hq (NL hoofdkantoor groep), nl_local_it (NL-dochter met eigen IT),
-abroad_central (IT centraal buitenland), unknown. Medewerkers: bron verplicht; range als exact getal onbekend.
-Telefoon: alleen het openbare algemene nummer van de organisatie. Contactpersonen: alleen rol; naam alleen als openbaar in
-professionele context op een opgehaalde bron. fieldConfidence: 0–1 per veld op basis van bronkwaliteit; null = onbekend.
-Elke feitclaim in facts heeft een sourceId.`,
-        tools: ["web_search", "fetch_page", "registry_lookup", "lookup_company_db"],
-        maxTurns: 18,
+      extract_profile: {
+        type: "extract_profile",
+        description: "Bedrijfsprofiel extraheren uit opgehaalde pagina's",
+        input: S.ExtractProfileInput,
+        output: S.ExtractProfileOutput,
+        instructions: `Je krijgt pagina's die al zijn opgehaald (homepage, contact, over ons, colofon, vacatures) en deterministische bevindingen.
+Extraheer uitsluitend wat in die pagina's staat; elk gevuld veld krijgt een sourceId en een LETTERLIJK citaat uit die pagina
+(code controleert dit en verwijdert velden waarvan het citaat niet voorkomt). businessCategory eerlijk bepalen
+(MSP/IT-consultancy/bureau = uitsluiting). purchasingAuthority: nl_independent / nl_group_hq / nl_local_it / abroad_central / unknown.
+Contactrollen alleen als ze op de pagina staan; naam alleen in professionele context. Lever direct met submit_result.`,
+        tools: [],
+        maxTurns: 2,
+        modelTier: "fast",
+        effort: "low",
+        skills: "none",
+        maxTokens: 6000,
+      },
+      deep_research: {
+        type: "deep_research",
+        description: "Kritieke gaten gericht onderzoeken",
+        input: S.GapFillInput,
+        output: S.GapFillOutput,
+        instructions: `Vul ALLEEN de opgegeven gaten (gaps). knownSources zijn al opgehaald en staan in de database — haal die niet opnieuw op.
+Gebruik gerichte bronnen: jaarverslag, KvK-register (registry_lookup indien beschikbaar), groepswebsite, persberichten, vakbladen.
+Maximaal 4 nieuwe pagina's. Elk antwoord met sourceId en letterlijk citaat; onvindbaar → null en in stillUnknown.`,
+        tools: ["web_search", "fetch_page", "registry_lookup"],
+        maxTurns: 8,
+        effort: "medium",
+        skills: "project",
+        maxTokens: 6000,
       },
       chat: chat(["registry_lookup"]),
     },
@@ -241,26 +302,29 @@ Elke feitclaim in facts heeft een sourceId.`,
 
   lead_qualification_specialist: {
     id: "lead_qualification_specialist", number: 9, name: "Lead Qualification Specialist", nameNl: "Leadkwalificatiespecialist",
-    mission: "Bepaalt of een organisatie commercieel geschikt is voor Cloud Life en welke dienst het beste instappunt is.",
-    responsibilities: ["Microsoft-fit, omvang, securitycomplexiteit, operationele blootstelling, compliance, terugkerende potentie, NL-inkoopbevoegdheid, sectorfit beoordelen", "Dienst aanbevelen met beknopte onderbouwing"],
+    mission: "Schrijft voor de eindlijst in batches een beknopte, op bewijs gebaseerde commerciële onderbouwing en toetst de aanbevolen dienst (Protect 365 / Purview Care of een assessment als instap).",
+    responsibilities: ["Commerciële onderbouwing per prospect (batch van max. 20)", "Dienst-aanbeveling toetsen tegen het dossier", "Terugkerende potentie inschatten"],
     skills: ["revops", "sales-enablement", "sales-army-icp"],
-    tools: ["get_company_dossier", "get_commercial_performance"],
-    modelTier: "strong",
-    qualityStandards: ["Score komt uit het transparante scoremodel; agent onderbouwt", "Fit en bewijsbetrouwbaarheid gescheiden"],
+    tools: ["get_company_dossier"],
+    modelTier: "standard",
+    activation: "Alleen bij het afronden van een run, in batches, voor de geselecteerde prospects. De score zelf is deterministisch.",
+    qualityStandards: ["Score komt uit het transparante scoremodel; agent onderbouwt", "Afwijking van regel-dienst alleen met reden", "Geen nieuwe diensten introduceren"],
     escalationRules: ["Afwijking van regel-gebaseerde dienst → reden verplicht"],
     kpis: [{ key: "score_appointment_correlation", label: "Correlatie score ↔ afspraak" }],
     tasks: {
-      qualify: {
-        type: "qualify",
-        description: "Commerciële kwalificatie",
-        input: S.QualifyInput,
-        output: S.QualifyOutput,
-        instructions: `De numerieke score is berekend door het transparante scoremodel (computedScore) en is leidend.
-Jij levert: de aanbevolen dienst (standaard ruleBasedService; wijk alleen af met expliciete, bewijsgebaseerde reden),
-een beknopte commerciële onderbouwing op basis van het dossier, terugkerende potentie, risico's en onderzoeksgaten.
-Gebruik geen kennis buiten het dossier als bewijs.`,
-        tools: ["get_company_dossier"],
-        maxTurns: 4,
+      rationale_batch: {
+        type: "rationale_batch",
+        description: "Commerciële onderbouwing (batch)",
+        input: S.RationaleBatchInput,
+        output: S.RationaleBatchOutput,
+        instructions: `Schrijf per bedrijf 2–4 zinnen commerciële onderbouwing, uitsluitend gebaseerd op de meegegeven feiten en score. Kerndiensten zijn
+Protect 365 en Purview Care; assessments en implementatieprojecten zijn instappunten naar een terugkerende relatie. Neem de
+regel-dienst over tenzij de feiten een andere instap duidelijk beter onderbouwen (geef dan serviceReason). Lever één item per companyId.`,
+        tools: [],
+        maxTurns: 2,
+        effort: "low",
+        skills: "project",
+        maxTokens: 8000,
       },
       chat: chat(),
     },
@@ -268,13 +332,14 @@ Gebruik geen kennis buiten het dossier als bewijs.`,
 
   quality_assurance_director: {
     id: "quality_assurance_director", number: 10, name: "Quality Assurance Director", nameNl: "Directeur Kwaliteitsborging",
-    mission: "Onafhankelijke kwaliteitscontrole met vetorecht. Opereert los van de agents die prospects genereren.",
-    responsibilities: ["Hallucinaties detecteren", "Bestaan bedrijf, website, telefoonnummer verifiëren", "Medewerkersschattingen en technologieclaims controleren", "Irrelevante prospects, duplicaten (incl. moeder/dochter) en uitsluitingen controleren", "Contactgeschiktheid en bewijs toetsen", "Onvoldoende onderzochte prospects afwijzen"],
+    mission: "Onafhankelijke kwaliteitscontrole met vetorecht, alleen op kandidaten die de lijst kunnen halen. Opereert los van de agents die prospects genereren.",
+    responsibilities: ["Hallucinaties detecteren", "Bestaan, website, telefoonnummer en medewerkersaantal verifiëren", "Technologieclaims tegen bronnen toetsen", "Irrelevante prospects, duplicaten en uitsluitingen controleren", "Contactgeschiktheid en bewijs toetsen"],
     skills: ["sales-army-qa", "firecrawl-scrape"],
     tools: ["fetch_page", "dns_lookup", "lookup_company_db", "get_company_dossier", "web_search"],
     modelTier: "strong",
-    qualityStandards: ["Bij twijfel: needs_research of rejected", "Steekproefsgewijs bronnen opnieuw ophalen", "Ziet geen verkoopargumenten van andere agents — alleen feiten en bronnen"],
-    escalationRules: ["Vermoeden van hallucinatie → afwijzen", "Contactbeperking → altijd afwijzen (niet overrulebaar via gewone goedkeuring)"],
+    activation: "Alleen voor kandidaten die na deterministische scoring 'sterk' of 'uitzonderlijk' zijn",
+    qualityStandards: ["Bij twijfel: needs_research of rejected", "Steekproefsgewijs één bron opnieuw ophalen", "Ziet geen verkoopargumenten van andere agents"],
+    escalationRules: ["Vermoeden van hallucinatie → afwijzen", "Contactbeperking → altijd afwijzen"],
     kpis: [{ key: "rejection_rate", label: "Afwijzingspercentage" }, { key: "post_qa_defects", label: "Defecten na QA (belbureau-feedback)" }],
     tasks: {
       review: {
@@ -282,13 +347,15 @@ Gebruik geen kennis buiten het dossier als bewijs.`,
         description: "Onafhankelijke QA-review",
         input: S.QaInput,
         output: S.QaOutput,
-        instructions: `Beoordeel het dossier kritisch en onafhankelijk. deterministicChecks zijn door code uitgevoerd en zijn leidend als ze falen.
-Verifieer zelf: haal de officiële website en minstens één kernbron opnieuw op (fetch_page) en controleer of naam, telefoonnummer
-en medewerkersaantal daar werkelijk staan. Controleer technologieclaims tegen hun bronnen. Controleer of het bedrijf relevant is
-(geen concurrent/MSP/bureau/startup) en niet al bekend is (lookup_company_db). Verdict: approved alleen als alle kritieke checks
-slagen; needs_research bij ontbrekend bewijs; rejected bij onjuistheden, hallucinaties, irrelevantie, duplicaat of contactbeperking.`,
-        tools: ["fetch_page", "dns_lookup", "lookup_company_db", "get_company_dossier"],
-        maxTurns: 12,
+        instructions: `Beoordeel het dossier kritisch en onafhankelijk. deterministicChecks (door code) zijn leidend als ze falen.
+De bronfragmenten staan in het dossier; haal hoogstens één kernbron opnieuw op als je twijfelt (fetch_page). Controleer naam,
+telefoonnummer, medewerkersaantal, technologieclaims, relevantie (geen concurrent/MSP/bureau/startup) en duplicaten.
+approved alleen als alle kritieke checks slagen; needs_research bij ontbrekend bewijs; rejected bij onjuistheden of hallucinaties.`,
+        tools: ["fetch_page", "lookup_company_db"],
+        maxTurns: 4,
+        effort: "medium",
+        skills: "project",
+        maxTokens: 6000,
       },
       chat: chat(),
     },
@@ -296,11 +363,12 @@ slagen; needs_research bij ontbrekend bewijs; rejected bij onjuistheden, halluci
 
   sales_operations_manager: {
     id: "sales_operations_manager", number: 11, name: "Sales Operations Manager", nameNl: "Sales Operations Manager",
-    mission: "Beheert levering, exports, feedback, conversies en commerciële rapportage.",
-    responsibilities: ["Wekelijkse levering", "Excel/CSV-exports", "Belbureau-workflow", "Historie", "Feedback-imports", "Afspraak- en conversietracking", "Reactivatieverzoeken", "Rapportage", "Retentie en verwijdering"],
+    mission: "Analyseert wekelijks de commerciële resultaten en formuleert aanbevelingen. Levering, exports, imports en retentie zijn deterministische processen onder zijn verantwoordelijkheid.",
+    responsibilities: ["Wekelijkse feedbackanalyse", "Aanbevelingen met eerlijke bewijskracht", "Bewaken van levering, imports, conversies en retentie (deterministisch)"],
     skills: ["revops", "sales-enablement", "sales-army-delivery"],
     tools: ["get_commercial_performance", "get_run_status", "lookup_company_db", "propose_recommendation"],
     modelTier: "standard",
+    activation: "1× per week (maandag 06:00) wanneer er belresultaten zijn",
     qualityStandards: ["Export bevat alleen QA-goedgekeurde, contactgeschikte, door mens goedgekeurde prospects", "Historie nooit overschrijven"],
     escalationRules: ["'Niet bellen' feedback → direct permanente suppressie"],
     kpis: [{ key: "on_time_delivery", label: "Tijdige levering" }, { key: "feedback_coverage", label: "Feedbackdekking" }],
@@ -310,11 +378,13 @@ slagen; needs_research bij ontbrekend bewijs; rejected bij onjuistheden, halluci
         description: "Commerciële feedbackanalyse",
         input: S.FeedbackAnalysisInput,
         output: S.FeedbackAnalysisOutput,
-        instructions: `Analyseer de commerciële resultaten (berekend door code, incl. betrouwbaarheidsintervallen en p-waarden).
+        instructions: `Analyseer de commerciële resultaten (berekend door code, incl. betrouwbaarheidsintervallen en p-waarden) en het bronrendement.
 Formuleer aanbevelingen en label de bewijskracht eerlijk: statistically_meaningful alleen als de data dat aangeeft;
 anders indicative of speculative. Onderscheid correlatie van causaliteit.`,
-        tools: ["get_commercial_performance"],
-        maxTurns: 4,
+        tools: [],
+        maxTurns: 2,
+        effort: "medium",
+        skills: "project",
       },
       chat: chat(["propose_recommendation"]),
     },

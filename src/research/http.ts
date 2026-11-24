@@ -1,7 +1,7 @@
 import { isIP } from "node:net";
 import { promises as dnsp } from "node:dns";
-import type { FetchProvider, FetchedPage } from "./types";
-import { FetchBlockedError } from "./types";
+import type { FetchProvider, FetchedPage, PageLink } from "./types";
+import { FetchBlockedError, ThinContentError } from "./types";
 
 /**
  * Direct HTTP fetch provider (free). Respects robots.txt, identifies itself
@@ -85,6 +85,29 @@ export function robotsAllows(robotsTxt: string, path: string, ua = "cloudlifesal
   return best ? best.allow : true;
 }
 
+/** Extract absolute http(s) links with anchor text (max 400). */
+export function extractLinks(html: string, base: string): PageLink[] {
+  const out: PageLink[] = [];
+  const seen = new Set<string>();
+  const re = /<a\b[^>]*href\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) && out.length < 400) {
+    try {
+      const u = new URL(m[1].trim(), base);
+      if (!/^https?:$/.test(u.protocol)) continue;
+      u.hash = "";
+      const href = u.href;
+      if (seen.has(href)) continue;
+      seen.add(href);
+      const text = m[2].replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+      out.push({ href, text });
+    } catch {
+      /* ignore malformed */
+    }
+  }
+  return out;
+}
+
 export function htmlToText(html: string): { title: string | null; text: string } {
   const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() ?? null;
   const text = html
@@ -155,7 +178,9 @@ export class HttpFetchProvider implements FetchProvider {
     if (/captcha|cf-challenge|challenge-platform|are you a robot/i.test(html.slice(0, 20000)) && html.length < 60000) {
       throw new FetchBlockedError("Bot-bescherming/CAPTCHA gedetecteerd — niet omzeild");
     }
-    const { title, text } = type.includes("html") ? htmlToText(html) : { title: null, text: html };
-    return { page: { url, finalUrl: res.finalUrl, status: res.status, title, text }, units: 1 };
+    const isHtml = type.includes("html");
+    const { title, text } = isHtml ? htmlToText(html) : { title: null, text: html };
+    if (isHtml && text.length < 300 && /<script/i.test(html)) throw new ThinContentError("Pagina bevat vrijwel alleen JavaScript (rendering vereist)");
+    return { page: { url, finalUrl: res.finalUrl, status: res.status, title, text, links: isHtml ? extractLinks(html, res.finalUrl) : [] }, units: 1 };
   }
 }

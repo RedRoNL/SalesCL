@@ -4,14 +4,16 @@ import { desc } from "drizzle-orm";
 import { getDb, schema } from "@/db/client";
 import { requirePageUser } from "@/lib/auth/current";
 import { getSettings, type SettingsKey } from "@/lib/settings";
-import { integrationStatus } from "@/lib/env";
+import { integrationStatus } from "@/lib/secrets";
 import { AGENT_LIST } from "@/agents/definitions";
 import { MODEL_PRICING_USD } from "@/lib/costs";
 import {
   updateSettingsAction, addExclusionAction, toggleExclusionAction, addSuppressionAction, createScoringVersionAction,
-  setUserRoleAction, setIndustryTierAction, importRelationshipsAction,
+  setUserRoleAction, setIndustryTierAction,
 } from "@/app/actions";
 import { PageHeader, Section, Badge, Button, Field, dt } from "@/components/ui";
+import { HistoricalImporter } from "@/components/HistoricalImporter";
+import { KIND_LABELS } from "@/lib/historicalImport";
 
 const SETTING_SECTIONS: [SettingsKey, string, string][] = [
   ["icp", "Ideaal klantprofiel & omvangprioriteiten", "Banden, minimum/maximum en uitgesloten categorieën."],
@@ -38,7 +40,7 @@ export default async function Settings() {
   const user = await requirePageUser("viewer");
   const isAdmin = user.role === "admin";
   const settings = await getSettings();
-  const integ = integrationStatus();
+  const integ = await integrationStatus();
   const db = getDb();
   const [exclusions, suppressionsCount, scoring, users, industries, audit] = await Promise.all([
     db.select().from(schema.exclusions).orderBy(desc(schema.exclusions.createdAt)),
@@ -135,15 +137,12 @@ export default async function Settings() {
       </Section>
 
       {isAdmin && (
-        <Section title="Bestaande relaties importeren">
-          <p className="text-[12px] text-faint mb-2">CSV/XLSX met kolommen als Bedrijfsnaam, Website, KvK. Deze bedrijven komen nooit in nieuwe acquisitielijsten tenzij expliciet gereactiveerd.</p>
-          <form action={importRelationshipsAction} className="flex gap-2 items-center">
-            <select name="kind" className="text-[12px]"><option value="customer">Bestaande klanten</option><option value="active_opportunity">Actieve opportunities</option><option value="prior_prospect">Historische prospectlijsten</option><option value="rejected">Eerder afgewezen</option></select>
-            <input type="file" name="file" accept=".csv,.xlsx" required />
-            <Button>Importeren</Button>
-          </form>
+        <Section title="Historische commerciële data importeren">
+          <p className="text-[12px] text-faint mb-2">Eerdere bellijsten, klanten, opportunities, afgewezen bedrijven en opt-outs (Excel/CSV, elke kolomindeling). Matching op KvK, (oude) domeinen incl. e-maildomein, telefoon en naam; elke variant wordt onthouden.</p>
+          <HistoricalImporter kinds={KIND_LABELS} />
         </Section>
       )}
+
 
       <Section title="Geïnstalleerde skills">
         <table><thead><tr><th>Skill</th><th>Herkomst</th><th>Versie</th><th>Licentie</th><th>Toegewezen aan</th></tr></thead><tbody>

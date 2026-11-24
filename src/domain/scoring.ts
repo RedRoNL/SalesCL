@@ -232,3 +232,32 @@ export const CLASSIFICATION_LABELS: Record<Classification, string> = {
   requires_research: "Aanvullend onderzoek nodig",
   reject: "Afwijzen",
 };
+
+/**
+ * Prescreen potential: what this company could plausibly score once unknown fields are
+ * researched. Unknown size, authority and Microsoft evidence get a bounded "expected" value;
+ * known negatives (contradicted Microsoft, abroad authority, tiny size) are not forgiven.
+ * Used only to decide whether further (paid) research is worth it — never for delivery.
+ */
+export function potentialScore(input: ScoringInput, cfg: ScoringConfig = DEFAULT_SCORING): number {
+  const r = scoreCompany(input, cfg);
+  if (r.hardFailures.length) return 0;
+  const w = cfg.weights;
+  const total = Object.values(w).reduce((a, b) => a + b, 0) || 1;
+  let upside = 0;
+  const comp = (k: keyof ScoringWeights) => r.components.find((c) => c.key === k)!;
+  if (input.employees == null) upside += w.organizationSize * 0.6 - comp("organizationSize").points;
+  if (!input.purchasingAuthority || input.purchasingAuthority === "unknown") upside += w.purchasingAuthority * 0.75 - comp("purchasingAuthority").points;
+  const ms = comp("microsoftFit");
+  if (ms.points < w.microsoftFit * 0.4 && !Object.values(input.msEvidence).includes("contradicted")) upside += w.microsoftFit * 0.45 - ms.points;
+  if (input.industryTier == null) upside += w.industryFit * 0.6 - comp("industryFit").points;
+  return Math.max(0, Math.min(100, Math.round(r.fitScore + (Math.max(0, upside) / total) * 100)));
+}
+
+/** Plain-language rationale generated from the score components (no model call). */
+export function templateRationale(r: ScoreResult, serviceLabel: string, serviceReasons: string[]): string {
+  const top = [...r.components].sort((a, b) => b.points / (b.max || 1) - a.points / (a.max || 1)).slice(0, 3);
+  const weak = r.components.filter((c) => c.max && c.points / c.max < 0.35).map((c) => c.label.toLowerCase());
+  return `Fit ${r.fitScore}/100 bij bewijsbetrouwbaarheid ${r.confidenceScore}/100. Sterkst: ${top.map((c) => `${c.label.toLowerCase()} (${c.explanation})`).join("; ")}.` +
+    `${weak.length ? ` Zwakker: ${weak.join(", ")}.` : ""} Aanbevolen instap: ${serviceLabel} — ${serviceReasons.join("; ")}.`;
+}
