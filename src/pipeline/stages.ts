@@ -106,6 +106,8 @@ async function stageEnrich(runId: string, companyId: string, research: ResearchS
   if (out.tradingName && normalizeCompanyName(out.tradingName) !== normalizeCompanyName(out.officialName))
     await db.insert(schema.companyAliases).values({ companyId, alias: out.tradingName, normalizedAlias: normalizeCompanyName(out.tradingName) });
   if (domain) await db.insert(schema.domains).values({ domain, companyId, isPrimary: true }).onConflictDoNothing();
+  if (valid(out.legalFormSourceId) && (out.kvkNumber || out.legalForm))
+    await db.insert(schema.legalEntities).values({ companyId, name: out.officialName, normalizedName: normalizeCompanyName(out.officialName), kvkNumber: out.kvkNumber, legalForm: out.legalForm, sourceId: out.legalFormSourceId });
 
   // Facts with provenance; unsourced facts are stored with confidence 0 and flagged.
   const factRows = out.facts.map((f) => ({ companyId, field: f.field, value: { v: f.value }, sourceId: valid(f.sourceId), confidence: valid(f.sourceId) ? f.confidence : 0, recordedBy: "company_research_specialist", expiresAt: new Date(Date.now() + settings.research.factReuseDays * 86400000) }));

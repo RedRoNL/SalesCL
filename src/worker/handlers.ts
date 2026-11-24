@@ -30,6 +30,13 @@ export const handlers: Record<JobName, (data: never) => Promise<void>> = {
     await audit({ actorType: "system", action: r.created ? "weekly.started" : "weekly.duplicate_prevented", entityType: "research_run", entityId: r.runId });
   },
   [JOBS.learning]: async () => {
+    // Weekly agent performance snapshot (history for HQ KPIs).
+    const rows = (await getDb().execute(sql`
+      select agent_id as "agentId", count(*)::int as tasks, count(*) filter (where status='succeeded')::int as succeeded,
+        count(*) filter (where status='failed')::int as failed, coalesce(sum(cost_eur),0)::float as cost, coalesce(avg(tool_calls),0)::float as "avgToolCalls"
+      from agent_tasks where created_at >= now() - interval '7 days' group by agent_id`)) as unknown as { agentId: string }[];
+    const periodStart = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    for (const r of rows) await getDb().insert(schema.agentPerformanceSnapshots).values({ agentId: r.agentId, periodStart, metrics: r });
     const perf = await commercialPerformance();
     await generateRecommendations(perf);
     if (modelAvailable() && perf.totals.called > 0) {
