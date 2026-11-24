@@ -11,7 +11,7 @@ import type { AgentId } from "@/agents/types";
 import { ResearchService, type FetchedSource } from "@/research/service";
 import { NON_COMPANY_DOMAINS, quoteFound } from "@/research/extract";
 import { FetchBlockedError } from "@/research/types";
-import { registerCandidate, type CandidateInput } from "@/pipeline/candidates";
+import { runActiveCandidateTotal, registerCandidate, type CandidateInput } from "@/pipeline/candidates";
 import { getRun, bumpStat, pauseRun, heartbeat } from "@/pipeline/runs";
 import { getQueue, JOBS } from "@/pipeline/queue";
 import { sourceStats } from "./sources";
@@ -49,7 +49,9 @@ export function linkCandidates(page: Pick<FetchedSource, "url" | "links">): { na
     const name = text && text.length >= 2 && text.length <= 80 && !GENERIC_ANCHOR_RE.test(text) && !NAVIGATION_ANCHOR_RE.test(text) && !/^https?:|\.(nl|com|eu)\b/i.test(text) ? text : null;
     if (!byDomain.has(d) || (name && !byDomain.get(d)!.name)) byDomain.set(d, { name: name ?? "", website: `https://${d}` });
   }
-  return [...byDomain.values()].map((c) => ({ name: c.name || c.website.replace(/^https:\/\//, "").split(".")[0].replace(/-/g, " "), website: c.website }));
+  // Links without a usable anchor text (logos, icons) are not registered: a name guessed from the domain produced
+  // non-companies in the live pilot (e.g. associations linked from a site footer).
+  return [...byDomain.values()].filter((c) => c.name);
 }
 
 /** Cheap model extraction of named organisations; every name must literally occur on the page. */
@@ -68,22 +70,33 @@ async function finishWork(workId: string, patch: Partial<typeof schema.runWork.$
   await getDb().update(schema.runWork).set({ ...patch, updatedAt: new Date() }).where(eq(schema.runWork.id, workId));
 }
 
-async function registerAll(runId: string, cands: (CandidateInput & { role?: string | null })[], sourcePriority: number) {
+/** Per-run bound on candidates in research at the same time (see registerCandidate). */
+export async function runCandidateCap(runId: string) {
   const settings = await getSettings();
   const run = await getRun(runId);
-  const maxCandidates = Math.min(settings.schedule.maxCandidatesPerRun, Math.ceil((run?.targetProspects ?? 100) * settings.schedule.candidateMultiplier * 1.6));
+  return Math.min(settings.schedule.maxCandidatesPerRun, Math.ceil((run?.targetProspects ?? 100) * settings.schedule.candidateMultiplier * 1.6));
+}
+
+/** Registers candidates until the cap is reached. Returns `capped: true` so the work unit is deferred, not lost. */
+async function registerAll(runId: string, cands: (CandidateInput & { role?: string | null })[], sourcePriority: number) {
+  const maxCandidates = await runCandidateCap(runId);
   const q = await getQueue();
   let created = 0;
+  let capped = false;
   for (const c of cands) {
     const r = await registerCandidate(runId, { ...c, priority: sourcePriority }, maxCandidates);
+    if (r.status === "capped") {
+      capped = true;
+      await bumpStat(runId, "discovery_deferred");
+      break;
+    }
     await bumpStat(runId, `discovery_${r.status}`);
-    if (r.status === "capped") break;
     if (r.status === "new" || r.status === "reused") {
       created++;
       await q.send(JOBS.candidate, { runId, companyId: r.companyId }, { singletonKey: `${runId}:${r.companyId}`, priority: sourcePriority });
     }
   }
-  return created;
+  return { created, capped };
 }
 
 /**
@@ -160,13 +173,14 @@ export async function harvestWork(runId: string, workId: string) {
         } catch {}
       }
     }
-    const created = await registerAll(runId, cands, priority);
+    const { created, capped } = await registerAll(runId, cands, priority);
     const exhausted = src.kind === "page" && created === 0 && src.harvestCount > 0;
     await db.update(schema.discoverySources).set({
       harvestCount: sql`${schema.discoverySources.harvestCount} + 1`, pagesHarvested: sql`${schema.discoverySources.pagesHarvested} + ${pages}`, lastHarvestedAt: new Date(),
       status: exhausted ? "exhausted" : cands.length ? "active" : src.status === "unverified" ? "retired" : src.status, statusReason: cands.length ? null : "Geen organisaties gevonden op deze bron", lastError: null,
     }).where(eq(schema.discoverySources.id, src.id));
-    await finishWork(workId, { status: "done", found: cands.length, newCandidates: created });
+    // Capped: the unit is deferred and re-run when rejected candidates free slots (already-registered ones dedup).
+    await finishWork(workId, { status: capped ? "deferred" : "done", found: cands.length, newCandidates: created });
   } catch (e) {
     if (e instanceof AwaitingExecutor) return; // work unit stays pending until Claude Code submits
     if (e instanceof BudgetExceededError) {
@@ -239,7 +253,7 @@ export async function huntWork(runId: string, workId: string) {
       searchThemes: (work.params.themes as string[]) ?? [], previousQueries: prev,
     }, { runId, research });
     const industryId = await industryIdOf(industry);
-    const created = await registerAll(runId, output.candidates.map((c) => ({ ...c, discoveredBy: agentId, discoverySourceId: virtual.id, role: "listed", industryId })), 55);
+    const { created, capped } = await registerAll(runId, output.candidates.map((c) => ({ ...c, discoveredBy: agentId, discoverySourceId: virtual.id, role: "listed", industryId })), 55);
     for (const p of output.poolsUsed) {
       if (!p.url || p.usefulness === "low") continue;
       const d = canonicalDomain(p.url);
@@ -247,12 +261,22 @@ export async function huntWork(runId: string, workId: string) {
       await db.insert(schema.discoverySources).values({ kind: "page", sourceType: ["association", "trade_fair", "ranking", "directory", "publication"].includes(p.sourceType) ? p.sourceType : "directory", name: p.name, url: p.url, industryCodes: [industry], origin: "agent" }).onConflictDoNothing();
     }
     await db.insert(schema.marketSegments).values({ industryId, sizeBand: agentId, description: output.notes.slice(0, 1000), queriesUsed: output.queriesUsed, sourcesUsed: output.poolsUsed.map((p) => `${p.name}${p.url ? ` (${p.url})` : ""}`), candidatesFound: created, exhaustionEstimate: output.exhaustionEstimate, lastResearchedAt: new Date() });
-    await finishWork(workId, { status: "done", found: output.candidates.length, newCandidates: created });
+    await finishWork(workId, { status: capped ? "deferred" : "done", found: output.candidates.length, newCandidates: created });
   } catch (e) {
     if (e instanceof AwaitingExecutor) return;
     if (e instanceof BudgetExceededError) return void (await pauseRun(runId, "system:budget", e.message));
     await finishWork(workId, { status: "failed", error: (e instanceof Error ? e.message : String(e)).slice(0, 1000) });
   }
+}
+
+/** Re-enqueue deferred discovery work once candidate slots are free again. Returns the number resumed. */
+export async function resumeDeferredWork(runId: string) {
+  const db = getDb();
+  if ((await runActiveCandidateTotal(runId)) >= (await runCandidateCap(runId))) return 0;
+  const rows = await db.update(schema.runWork).set({ status: "pending", updatedAt: new Date() }).where(and(eq(schema.runWork.runId, runId), eq(schema.runWork.status, "deferred"))).returning();
+  const q = await getQueue();
+  for (const w of rows) await q.send(w.kind === "harvest" ? JOBS.harvest : w.kind === "scout" ? JOBS.scout : JOBS.hunt, { runId, workId: w.id }, { singletonKey: `${w.id}:resume:${Date.now()}` });
+  return rows.length;
 }
 
 export async function openWorkCount(runId: string) {

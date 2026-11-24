@@ -69,13 +69,13 @@ export async function registerCandidate(runId: string, input: CandidateInput, ma
     if (existing.reason !== "fuzzy_name") await addIdentifiers(existing.matchedId, { names: [input.name], domains: [domain] }, "discovery");
     const [already] = await db.select({ id: schema.runCandidates.id }).from(schema.runCandidates).where(and(eq(schema.runCandidates.runId, runId), eq(schema.runCandidates.companyId, existing.matchedId)));
     if (!already && REUSABLE.has(existing.status) && existing.relationship === "none" && (!existing.delivered || existing.reactivationApproved)) {
-      if (maxCandidates != null && (await runCandidateTotal(runId)) >= maxCandidates) return { status: "capped" };
+      if (maxCandidates != null && (await candidateCapReached(runId, maxCandidates))) return { status: "capped" };
       await db.insert(schema.runCandidates).values({ runId, companyId: existing.matchedId, hunter: input.discoveredBy, discoverySourceId: input.discoverySourceId ?? null, priority: input.priority ?? 50, checkpoint: { reused: true } }).onConflictDoNothing();
       return { status: "reused", companyId: existing.matchedId };
     }
     return { status: "duplicate", matchedId: existing.matchedId, reason: `${existing.reason} (${existing.matchedName})` };
   }
-  if (maxCandidates != null && (await runCandidateTotal(runId)) >= maxCandidates) return { status: "capped" };
+  if (maxCandidates != null && (await candidateCapReached(runId, maxCandidates))) return { status: "capped" };
 
   const ex = await checkExclusions({ name: input.name, domain });
   const [company] = await db
@@ -100,6 +100,21 @@ export async function registerCandidate(runId: string, input: CandidateInput, ma
 
 export async function runCandidateTotal(runId: string): Promise<number> {
   const [r] = await getDb().select({ n: sql<number>`count(*)::int` }).from(schema.runCandidates).where(eq(schema.runCandidates.runId, runId));
+  return r.n;
+}
+
+/**
+ * Candidates that still consume (or produced) research capacity. Rejected/skipped/failed candidates free their slot,
+ * so a member list full of small firms cannot crowd out larger employers found later in the run (live-pilot finding).
+ * Total work stays bounded by the per-run budget, the hard maxCandidatesPerRun on discovery and the stop-at-target rule.
+ */
+/** Active slots are bounded by maxCandidates; total screened candidates by 4× that (free screening is cheap). */
+async function candidateCapReached(runId: string, maxCandidates: number) {
+  return (await runActiveCandidateTotal(runId)) >= maxCandidates || (await runCandidateTotal(runId)) >= maxCandidates * 4;
+}
+
+export async function runActiveCandidateTotal(runId: string): Promise<number> {
+  const [r] = await getDb().select({ n: sql<number>`count(*)::int` }).from(schema.runCandidates).where(and(eq(schema.runCandidates.runId, runId), inArray(schema.runCandidates.status, ["pending", "in_progress", "done"])));
   return r.n;
 }
 

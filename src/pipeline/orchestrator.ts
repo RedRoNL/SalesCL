@@ -12,7 +12,7 @@ import { ResearchService } from "@/research/service";
 import { isoWeek, employeeEstimate, sizeBand } from "@/domain/normalize";
 import { SERVICES } from "@/domain/services";
 import { sourceStats, selectSources } from "@/discovery/sources";
-import { openWorkCount } from "@/discovery/work";
+import { openWorkCount, resumeDeferredWork } from "@/discovery/work";
 import { buildCapabilities } from "./capabilities";
 import { registerCandidate, openCandidateCount, runCandidateCounts, qualifiedCount } from "./candidates";
 import { getRun, setRunStatus, heartbeat, bumpStat, pauseRun, runStatusSummary, type RunParams } from "./runs";
@@ -145,6 +145,8 @@ export async function advanceRun(runId: string) {
   const db = getDb();
   const run = await getRun(runId);
   if (!run || run.status !== "running") return;
+  // Deferred discovery (cap was reached) resumes as soon as rejections have freed slots and the target is not met yet.
+  if ((await qualifiedCount(runId)) < run.targetProspects && (await resumeDeferredWork(runId)) > 0) return;
   if ((await openWorkCount(runId)) > 0 || (await openCandidateCount(runId)) > 0) return;
   const settings = await getSettings();
   const qualified = await qualifiedCount(runId);

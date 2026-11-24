@@ -164,7 +164,8 @@ describe("discovery-source prioritisation", () => {
       { href: "https://www.lid-een.example/", text: "Lid Een B.V." }, { href: "https://www.linkedin.com/x", text: "LinkedIn" },
       { href: "https://vereniging.example/agenda", text: "Agenda" }, { href: "https://lid-twee.example", text: "Lees meer" },
     ] });
-    expect(c).toEqual([{ name: "Lid Een B.V.", website: "https://lid-een.example" }, { name: "lid twee", website: "https://lid-twee.example" }]);
+    // "Lees meer" is no name, and a name is never guessed from the domain (live-pilot finding).
+    expect(c).toEqual([{ name: "Lid Een B.V.", website: "https://lid-een.example" }]);
   });
 });
 
@@ -268,7 +269,10 @@ describe("funnel: target reached → reserve, reused by the next run; pilot metr
     expect(m.verifiedPhones).toBeGreaterThanOrEqual(1);
     expect(m.verifiedEmployeeCounts).toBeGreaterThanOrEqual(1);
     expect(m.sourceQuality[0].name).toBe("Synth");
-    expect(m.candidatesDiscovered).toBeLessThanOrEqual(4); // per-run candidate cap (target × multiplier × 1.6) respected
+    // Per-run cap (target × multiplier × 1.6 = 4) bounds ACTIVE/qualified slots; rejected ones free their slot; total ≤ 4×.
+    const active = (await db.select().from(schema.runCandidates).where(eq(schema.runCandidates.runId, r.runId))).filter((x) => ["pending", "in_progress", "done"].includes(x.status));
+    expect(active.length).toBeLessThanOrEqual(4);
+    expect(m.candidatesDiscovered).toBeLessThanOrEqual(16);
     expect(m.costPerQualifiedEur).toBeGreaterThan(0);
 
     // Next run: reserve candidates are fed back first; their pages come from cache (no re-fetch).

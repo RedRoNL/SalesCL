@@ -561,5 +561,6 @@ export async function processCandidate(runId: string, companyId: string): Promis
       await audit({ actorType: "system", action: "candidate.failed", entityType: "company", entityId: companyId, details: { runId, error: msg.slice(0, 500) } });
     }
   }
-  if ((await openCandidateCount(runId)) === 0) await (await getQueue()).send(JOBS.finalize, { runId }, { singletonKey: `${runId}:advance` });
+  const deferred = await db.select({ id: schema.runWork.id }).from(schema.runWork).where(and(eq(schema.runWork.runId, runId), eq(schema.runWork.status, "deferred"))).limit(1);
+  if (deferred.length || (await openCandidateCount(runId)) === 0) await (await getQueue()).send(JOBS.finalize, { runId }, { singletonKey: `${runId}:advance` });
 }
