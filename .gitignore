@@ -11,3 +11,6 @@ next-env.d.ts
 exports/
 uploads/
 *.log
+
+# Generated lead lists (company data, never committed)
+/output
