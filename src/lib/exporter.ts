@@ -26,6 +26,16 @@ export type ExportRow = Record<(typeof EXPORT_COLUMNS)[number]["key"], string>;
 
 export class ExportBlockedError extends Error {}
 
+/** Neutralise spreadsheet formula injection (OWASP CSV injection): values from the web may start with = + - @. */
+export function safeCell(v: string): string {
+  return /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+}
+/** +31101234567 → 010 1234567 (national format avoids leading "+" and is what Dutch callers expect). */
+export function nationalPhone(e164: string): string {
+  const d = e164.replace(/^\+31/, "0");
+  return /^0[1-9]\d{8}$/.test(d) ? `${d.slice(0, d.startsWith("06") || /^0(10|20|30|40|50|70)/.test(d) ? 3 : 4)} ${d.slice(d.startsWith("06") || /^0(10|20|30|40|50|70)/.test(d) ? 3 : 4)}` : d;
+}
+
 /**
  * Build export rows for an approved list. Every row is re-checked at export
  * time: QA approval, human approval, contact eligibility and suppressions.
@@ -68,11 +78,13 @@ export async function buildExportRows(listId: string): Promise<{ rows: ExportRow
       industry: ind?.nameNl ?? "",
       employees: c.employeeCount != null ? String(c.employeeCount) : c.employeeMin != null && c.employeeMax != null ? `${c.employeeMin}–${c.employeeMax}` : est != null ? `±${est}` : "",
       headquarters: c.hqCity ?? c.nlOfficeCity ?? "",
-      phone: el.exportablePhone!,
+      phone: nationalPhone(el.exportablePhone!),
       decisionMakerRole: item.contactRole ?? "",
       contactName: item.contactName ?? "",
       priority: item.priority,
     });
+    const last = rows[rows.length - 1];
+    for (const k of Object.keys(last) as (keyof ExportRow)[]) last[k] = safeCell(last[k]);
     ok.push(c.id);
   }
   return { rows, companyIds: ok, withheld };

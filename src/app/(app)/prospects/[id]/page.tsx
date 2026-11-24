@@ -101,7 +101,7 @@ export default async function Profile({ params }: { params: Promise<{ id: string
             <dl className="grid grid-cols-[130px_1fr] gap-y-1.5 text-[13px]">
               <dt className="text-muted">Officiële naam</dt><dd>{c.officialName}</dd>
               <dt className="text-muted">Handelsnaam</dt><dd>{c.tradingName ?? "—"}</dd>
-              <dt className="text-muted">Website</dt><dd>{c.website ? <a href={c.website} target="_blank" rel="noopener noreferrer nofollow" className="text-accent">{c.website}</a> : "—"}</dd>
+              <dt className="text-muted">Website</dt><dd>{c.website && /^https?:\/\//i.test(c.website) ? <a href={c.website} target="_blank" rel="noopener noreferrer nofollow" className="text-accent">{c.website}</a> : "—"}</dd>
               <dt className="text-muted">Medewerkers</dt><dd className="num">{c.employees.count != null ? nf(c.employees.count) : c.employees.min != null ? `${nf(c.employees.min)}–${nf(c.employees.max)}` : "onbekend"} {c.employees.sourceId && srcLink(c.employees.sourceId)}</dd>
               <dt className="text-muted">Hoofdkantoor</dt><dd>{[c.hqCity, c.hqCountry].filter(Boolean).join(", ") || "—"}</dd>
               <dt className="text-muted">NL-vestiging</dt><dd>{c.nlOfficeCity ?? "—"}</dd>

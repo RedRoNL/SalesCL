@@ -39,7 +39,19 @@ const resp = (body: string, init: { status?: number; type?: string; url?: string
   return r;
 };
 
+const PUBLIC = async () => ["93.184.216.34"]; // synthetic public address
+
 describe("HTTP research provider (respectful, non-intrusive)", () => {
+  it("blocks hostnames that resolve to private addresses and redirects to internal hosts", async () => {
+    const f = (async () => resp("ok")) as typeof fetch;
+    await expect(new HttpFetchProvider("TestBot", f, undefined, async () => ["10.0.0.7"]).fetch("https://rebind.example/")).rejects.toThrow(/privé/);
+    const redirecting = (async (url: string) => {
+      if (String(url).endsWith("/robots.txt")) return resp("", { status: 404 });
+      return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data" } });
+    }) as typeof fetch;
+    await expect(new HttpFetchProvider("TestBot", redirecting, undefined, PUBLIC).fetch("https://site.example/")).rejects.toThrow(FetchBlockedError);
+  });
+
   it("parses robots.txt with specific and wildcard agents", () => {
     const robots = "User-agent: *\nDisallow: /private\nAllow: /private/public\n\nUser-agent: CloudLifeSalesArmyResearchBot\nDisallow: /no-bots\n";
     expect(robotsAllows(robots, "/over-ons")).toBe(true);
@@ -57,16 +69,16 @@ describe("HTTP research provider (respectful, non-intrusive)", () => {
 
   it("respects robots.txt disallow", async () => {
     const f = (async (url: string) => (String(url).endsWith("/robots.txt") ? resp("User-agent: *\nDisallow: /secret", { type: "text/plain" }) : resp("<html>ok</html>"))) as typeof fetch;
-    const p = new HttpFetchProvider("TestBot", f);
+    const p = new HttpFetchProvider("TestBot", f, undefined, PUBLIC);
     await expect(p.fetch("https://site.example/secret/page")).rejects.toThrow(/robots/);
     await expect(p.fetch("https://site.example/open")).resolves.toBeTruthy();
   });
 
   it("never bypasses access controls or CAPTCHAs", async () => {
     const f403 = (async (url: string) => (String(url).endsWith("/robots.txt") ? resp("", { status: 404 }) : resp("Forbidden", { status: 403 }))) as typeof fetch;
-    await expect(new HttpFetchProvider("TestBot", f403).fetch("https://site.example/")).rejects.toThrow(/niet omzeild/);
+    await expect(new HttpFetchProvider("TestBot", f403, undefined, PUBLIC).fetch("https://site.example/")).rejects.toThrow(/niet omzeild/);
     const fCaptcha = (async (url: string) => (String(url).endsWith("/robots.txt") ? resp("", { status: 404 }) : resp("<html><div class='g-recaptcha'>captcha</div></html>"))) as typeof fetch;
-    await expect(new HttpFetchProvider("TestBot", fCaptcha).fetch("https://site.example/")).rejects.toThrow(/CAPTCHA/);
+    await expect(new HttpFetchProvider("TestBot", fCaptcha, undefined, PUBLIC).fetch("https://site.example/")).rejects.toThrow(/CAPTCHA/);
   });
 
   it("extracts readable text from HTML and drops scripts", () => {
@@ -214,5 +226,16 @@ describe("scheduler (pg-boss, Europe/Amsterdam)", () => {
     expect((await boss.getSchedules()).find((s) => s.name === "weekly-trigger")).toBeUndefined();
     await updateSetting("schedule", DEFAULT_SETTINGS.schedule, "test");
     await boss.stop({ graceful: false });
+  });
+});
+
+describe("export hardening", () => {
+  it("neutralises spreadsheet formula injection and formats phones nationally", async () => {
+    const { safeCell, nationalPhone } = await import("@/lib/exporter");
+    expect(safeCell("=HYPERLINK(\"http://evil\")")).toBe("'=HYPERLINK(\"http://evil\")");
+    expect(safeCell("@SUM(A1)")).toBe("'@SUM(A1)");
+    expect(safeCell("Synthetische Voeding B.V.")).toBe("Synthetische Voeding B.V.");
+    expect(nationalPhone("+31101234567")).toBe("010 1234567");
+    expect(nationalPhone("+31555123456")).toBe("0555 123456");
   });
 });

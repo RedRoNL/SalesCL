@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { promises as dnsp } from "node:dns";
 import type { FetchProvider, FetchedPage } from "./types";
 import { FetchBlockedError } from "./types";
 
@@ -21,14 +22,32 @@ export function assertPublicHttpUrl(raw: string): URL {
   if (u.username || u.password) throw new FetchBlockedError("URL met inloggegevens geweigerd");
   const host = u.hostname.replace(/^\[|\]$/g, "");
   if (PRIVATE_HOST.test(host)) throw new FetchBlockedError("Interne host geweigerd");
-  if (isIP(host)) {
-    // Block private, loopback, link-local and metadata ranges (SSRF protection).
-    if (/^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host) || host === "::1" || /^f[cd]|^fe80/i.test(host)) {
-      throw new FetchBlockedError("Privé IP-adres geweigerd");
-    }
-  }
+  if (isIP(host) && isPrivateIp(host)) throw new FetchBlockedError("Privé IP-adres geweigerd");
   if (u.port && !["80", "443"].includes(u.port)) throw new FetchBlockedError("Niet-standaard poort geweigerd");
   return u;
+}
+
+/** Private, loopback, link-local, CGNAT, metadata and unique-local ranges (SSRF protection). */
+export function isPrivateIp(ip: string): boolean {
+  const v = ip.replace(/^::ffff:/i, "");
+  if (isIP(v) === 4) return /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|22[4-9]\.|23\d\.|24\d\.|25[0-5]\.)/.test(v);
+  return v === "::1" || v === "::" || /^f[cd]/i.test(v) || /^fe[89ab]/i.test(v);
+}
+
+export type Resolver = (host: string) => Promise<string[]>;
+const systemResolver: Resolver = async (host) => (await dnsp.lookup(host, { all: true })).map((a) => a.address);
+
+/** Resolve the hostname and refuse if ANY address is private (blocks DNS-based SSRF). */
+export async function assertPublicHost(u: URL, resolve: Resolver): Promise<void> {
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  if (isIP(host)) return;
+  let addrs: string[];
+  try {
+    addrs = await resolve(host);
+  } catch {
+    throw new FetchBlockedError(`Host niet resolvebaar: ${host}`);
+  }
+  if (!addrs.length || addrs.some(isPrivateIp)) throw new FetchBlockedError("Host resolveert naar privé-adres — geweigerd");
 }
 
 /** Minimal robots.txt evaluation for our user-agent and "*". */
@@ -90,15 +109,32 @@ export class HttpFetchProvider implements FetchProvider {
   readonly name = "http";
   readonly paid = false;
   private robotsCache = new Map<string, string | null>();
-  constructor(private userAgent: string, private fetchImpl: typeof fetch = fetch, private maxBytes = 2_000_000) {}
+  constructor(private userAgent: string, private fetchImpl: typeof fetch = fetch, private maxBytes = 2_000_000, private resolve: Resolver = systemResolver) {}
+
+  /** GET with manual redirect handling so every hop is re-validated (no redirect-based SSRF). */
+  private async safeGet(start: URL, accept: string, timeoutMs: number): Promise<Response & { finalUrl: string }> {
+    let url = start;
+    for (let hop = 0; hop < 5; hop++) {
+      assertPublicHttpUrl(url.href);
+      await assertPublicHost(url, this.resolve);
+      const res = await this.fetchImpl(url.href, { headers: { "user-agent": this.userAgent, accept, "accept-language": "nl-NL,nl;q=0.9,en;q=0.8" }, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+      if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+        url = new URL(res.headers.get("location")!, url);
+        continue;
+      }
+      return Object.assign(res, { finalUrl: url.href });
+    }
+    throw new FetchBlockedError("Te veel redirects");
+  }
 
   private async robots(origin: string): Promise<string | null> {
     if (this.robotsCache.has(origin)) return this.robotsCache.get(origin)!;
     let txt: string | null = null;
     try {
-      const r = await this.fetchImpl(`${origin}/robots.txt`, { headers: { "user-agent": this.userAgent }, signal: AbortSignal.timeout(10000), redirect: "follow" });
+      const r = await this.safeGet(new URL(`${origin}/robots.txt`), "text/plain", 10000);
       txt = r.ok ? await r.text() : null;
-    } catch {
+    } catch (e) {
+      if (e instanceof FetchBlockedError) throw e;
       txt = null;
     }
     this.robotsCache.set(origin, txt);
@@ -109,12 +145,7 @@ export class HttpFetchProvider implements FetchProvider {
     const u = assertPublicHttpUrl(url);
     const robots = await this.robots(u.origin);
     if (robots && !robotsAllows(robots, u.pathname + u.search)) throw new FetchBlockedError(`robots.txt staat ${u.pathname} niet toe`);
-    const res = await this.fetchImpl(u.href, {
-      headers: { "user-agent": this.userAgent, accept: "text/html,application/xhtml+xml,text/plain;q=0.9", "accept-language": "nl-NL,nl;q=0.9,en;q=0.8" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(20000),
-    });
-    assertPublicHttpUrl(res.url || u.href);
+    const res = await this.safeGet(u, "text/html,application/xhtml+xml,text/plain;q=0.9", 20000);
     if ([401, 403, 407, 429].includes(res.status)) throw new FetchBlockedError(`Toegang geweigerd (${res.status}) — niet omzeild`);
     const type = res.headers.get("content-type") ?? "";
     if (!/text\/html|text\/plain|application\/xhtml/.test(type)) throw new FetchBlockedError(`Niet-ondersteund contenttype: ${type}`);
@@ -125,6 +156,6 @@ export class HttpFetchProvider implements FetchProvider {
       throw new FetchBlockedError("Bot-bescherming/CAPTCHA gedetecteerd — niet omzeild");
     }
     const { title, text } = type.includes("html") ? htmlToText(html) : { title: null, text: html };
-    return { page: { url, finalUrl: res.url || url, status: res.status, title, text }, units: 1 };
+    return { page: { url, finalUrl: res.finalUrl, status: res.status, title, text }, units: 1 };
   }
 }
