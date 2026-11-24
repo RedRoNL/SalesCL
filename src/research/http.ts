@@ -35,12 +35,41 @@ export function isPrivateIp(ip: string): boolean {
 }
 
 export type Resolver = (host: string) => Promise<string[]>;
-const systemResolver: Resolver = async (host) => (await dnsp.lookup(host, { all: true })).map((a) => a.address);
+/**
+ * Public DNS-over-HTTPS A/AAAA lookup. Used when the host can only reach the internet through an HTTPS egress proxy
+ * that resolves names itself (e.g. a Claude Code cloud environment): the system resolver then cannot answer, but the
+ * SSRF check must still see the destination's public addresses.
+ */
+export function dohResolver(endpoint = process.env.DOH_RESOLVER_URL || "https://cloudflare-dns.com/dns-query", fetchImpl: typeof fetch = fetch): Resolver {
+  return async (host) => {
+    const out: string[] = [];
+    for (const [type, code] of [["A", 1], ["AAAA", 28]] as const) {
+      const r = await fetchImpl(`${endpoint}?name=${encodeURIComponent(host)}&type=${type}`, { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const j = (await r.json()) as { Answer?: { type: number; data: string }[] };
+      out.push(...(j.Answer ?? []).filter((a) => a.type === code).map((a) => a.data));
+    }
+    if (!out.length) throw new Error("ENOTFOUND");
+    return out;
+  };
+}
+const systemResolver: Resolver = async (host) => {
+  try {
+    return (await dnsp.lookup(host, { all: true })).map((a) => a.address);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if ((code === "ENOTFOUND" || code === "EAI_AGAIN") && (process.env.HTTPS_PROXY || process.env.https_proxy)) return dohResolver()(host);
+    throw e;
+  }
+};
 
 /** Resolve the hostname and refuse if ANY address is private (blocks DNS-based SSRF). */
 export async function assertPublicHost(u: URL, resolve: Resolver): Promise<void> {
   const host = u.hostname.replace(/^\[|\]$/g, "");
-  if (isIP(host)) return;
+  if (isIP(host)) {
+    if (isPrivateIp(host)) throw new FetchBlockedError("Privé-adres — geweigerd");
+    return;
+  }
   let addrs: string[];
   try {
     addrs = await resolve(host);
@@ -137,10 +166,8 @@ export class HttpFetchProvider implements FetchProvider {
   /** GET with manual redirect handling so every hop is re-validated (no redirect-based SSRF). */
   private async safeGet(start: URL, accept: string, timeoutMs: number): Promise<Response & { finalUrl: string }> {
     let url = start;
-    for (let hop = 0; hop < 5; hop++) {
-      assertPublicHttpUrl(url.href);
-      await assertPublicHost(url, this.resolve);
-      const res = await this.fetchImpl(url.href, { headers: { "user-agent": this.userAgent, accept, "accept-language": "nl-NL,nl;q=0.9,en;q=0.8" }, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+    for (let hop = 0; hop < 6; hop++) {
+      const res = await this.getOnce(url, accept, timeoutMs);
       if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
         url = new URL(res.headers.get("location")!, url);
         continue;
@@ -148,6 +175,46 @@ export class HttpFetchProvider implements FetchProvider {
       return Object.assign(res, { finalUrl: url.href });
     }
     throw new FetchBlockedError("Te veel redirects");
+  }
+
+  /**
+   * One validated GET. Normal-browser fallbacks, no circumvention:
+   *  - http:// is tried as https:// first (many sites redirect to plain http while serving https; HTTPS-only egress
+   *    proxies cannot carry plain http);
+   *  - a bare domain whose certificate only covers www. (or vice versa) is retried on the other host name.
+   */
+  private async getOnce(url: URL, accept: string, timeoutMs: number): Promise<Response> {
+    const variants: URL[] = [];
+    if (url.protocol === "http:") variants.push(Object.assign(new URL(url.href), { protocol: "https:" }));
+    variants.push(url);
+    let lastErr: unknown;
+    for (const v of variants) {
+      try {
+        return await this.request(v, accept, timeoutMs);
+      } catch (e) {
+        if (e instanceof FetchBlockedError) throw e;
+        lastErr = e;
+        const code = (e as { cause?: { code?: string } }).cause?.code ?? "";
+        if (/CERT|ALTNAME|ERR_TLS/.test(code) && v.protocol === "https:") {
+          const alt = new URL(v.href);
+          alt.hostname = alt.hostname.startsWith("www.") ? alt.hostname.slice(4) : `www.${alt.hostname}`;
+          try {
+            return await this.request(alt, accept, timeoutMs);
+          } catch (e2) {
+            if (e2 instanceof FetchBlockedError) throw e2;
+            lastErr = e2;
+          }
+        }
+      }
+    }
+    const code = (lastErr as { cause?: { code?: string } }).cause?.code;
+    throw code ? new Error(`Verbinding mislukt (${code})`, { cause: lastErr }) : lastErr;
+  }
+
+  private async request(url: URL, accept: string, timeoutMs: number): Promise<Response> {
+    assertPublicHttpUrl(url.href);
+    await assertPublicHost(url, this.resolve);
+    return this.fetchImpl(url.href, { headers: { "user-agent": this.userAgent, accept, "accept-language": "nl-NL,nl;q=0.9,en;q=0.8" }, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
   }
 
   private async robots(origin: string): Promise<string | null> {
@@ -174,7 +241,8 @@ export class HttpFetchProvider implements FetchProvider {
     if (!/text\/html|text\/plain|application\/xhtml/.test(type)) throw new FetchBlockedError(`Niet-ondersteund contenttype: ${type}`);
     const buf = await res.arrayBuffer();
     if (buf.byteLength > this.maxBytes) throw new FetchBlockedError("Pagina te groot");
-    const html = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+    // NUL and other C0 control characters (except tab/newline) are rejected by PostgreSQL text/jsonb and carry no content.
+    const html = new TextDecoder("utf-8", { fatal: false }).decode(buf).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ");
     if (/captcha|cf-challenge|challenge-platform|are you a robot/i.test(html.slice(0, 20000)) && html.length < 60000) {
       throw new FetchBlockedError("Bot-bescherming/CAPTCHA gedetecteerd — niet omzeild");
     }

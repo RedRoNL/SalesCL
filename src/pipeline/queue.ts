@@ -35,8 +35,8 @@ export interface JobQueue {
   process?(maxMs: number, handlers: JobHandlers, names?: JobName[]): Promise<number>;
 }
 
-/** Jobs the pump advances (the scheduler/maintenance jobs stay with the optional worker or the scheduled task). */
-export const PUMP_JOBS: JobName[] = [JOBS.orchestrate, JOBS.harvest, JOBS.scout, JOBS.hunt, JOBS.finalize, JOBS.chat, JOBS.candidate];
+/** Jobs the pump advances. Without a worker, the session also runs the daily maintenance jobs (learning, retention). */
+export const PUMP_JOBS: JobName[] = [JOBS.orchestrate, JOBS.harvest, JOBS.scout, JOBS.hunt, JOBS.finalize, JOBS.chat, JOBS.candidate, JOBS.learning, JOBS.retention];
 
 /** Production queue: pg-boss on the same PostgreSQL database (durable, retries, singletons). */
 export class PgBossQueue implements JobQueue {

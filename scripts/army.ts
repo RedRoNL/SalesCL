@@ -1,7 +1,7 @@
 /**
  * army — the Claude Code session's command-line client for the Sales Army research bridge.
  *
- *   npx tsx scripts/army.ts start [--run <id>] [--kind weekly|manual] [--target N] [--session-url URL] [--payload-file F]
+ *   npx tsx scripts/army.ts start [--run <id>] [--kind weekly|manual|pilot] [--preset manufacturing|logistics|operational] [--target N] [--session-url URL] [--payload-file F]
  *   npx tsx scripts/army.ts pump [--ms 60000]
  *   npx tsx scripts/army.ts tasks [--run <id>] [--limit 5] [--agent <agentId>]
  *   npx tsx scripts/army.ts spec <taskId>
@@ -13,13 +13,21 @@
  * Transport: HTTPS to $SALES_ARMY_URL/api/bridge/<action>. In a Claude Code cloud environment the
  * bridge token is a *network secret* for that host: the egress proxy injects the Authorization header,
  * so the token never appears in the session. Locally, SALES_ARMY_BRIDGE_TOKEN may be set instead.
- * `--direct` calls the bridge in-process against DATABASE_URL (local development / pilots).
+ * `--direct` (or no SALES_ARMY_URL but a DATABASE_URL, e.g. from a git-ignored .env.local) calls the bridge
+ * in-process against the database (local development / pilots).
  * Output is always JSON on stdout.
  */
 import { readFileSync } from "node:fs";
 
+// Local development: optional, git-ignored .env.local (never used for the bridge token in the cloud).
+try {
+  process.loadEnvFile(".env.local");
+} catch {
+  /* not present */
+}
 const argv = process.argv.slice(2);
-const direct = argv.includes("--direct");
+// In-process mode when explicitly requested, or locally when no bridge URL is configured but a database is.
+const direct = argv.includes("--direct") || (!process.env.SALES_ARMY_URL && Boolean(process.env.DATABASE_URL));
 const args = argv.filter((a) => a !== "--direct");
 const cmd = args[0];
 const flag = (name: string) => {
@@ -33,7 +41,7 @@ const num = (v?: string) => (v ? Number(v) : undefined);
 function body(): { action: string; payload: Record<string, unknown> } {
   switch (cmd) {
     case "start":
-      return { action: "start", payload: { runId: flag("run"), kind: flag("kind"), target: num(flag("target")), sessionUrl: flag("session-url") ?? sessionUrlFromEnv(), payload: flag("payload-file") ? readFileSync(flag("payload-file")!, "utf8").slice(0, 65536) : flag("payload") } };
+      return { action: "start", payload: { runId: flag("run"), kind: flag("kind"), preset: flag("preset"), target: num(flag("target")), sessionUrl: flag("session-url") ?? sessionUrlFromEnv(), payload: flag("payload-file") ? readFileSync(flag("payload-file")!, "utf8").slice(0, 65536) : flag("payload") } };
     case "pump":
       return { action: "pump", payload: { maxMs: num(flag("ms")) } };
     case "tasks":

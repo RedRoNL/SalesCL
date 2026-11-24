@@ -43,3 +43,48 @@ agents (CSO, Market Intelligence, hunters, Sales Ops) run a handful of times per
 - **Search-engine coverage of Dutch niche lists** differs per provider; compare Claude web search vs Brave during pilots.
 - **QA on Opus is ~58% of variable cost**; running QA on Sonnet halves it but should only be decided after comparing QA rejection quality in pilots.
 - Legal review of the telemarketing eligibility configuration is still required.
+
+---
+
+# v3 addendum: Claude Subscription Mode (2026-11-24)
+
+**Decision.** The AI execution layer was refactored; the business functionality was left as it was.
+- Agent tasks are parked and executed by native Claude Code cloud sessions (scheduled tasks) through a narrow research
+  bridge.
+- The Messages-API loop remains as the optional, explicitly approved Paid API Mode.
+- Verified against Anthropic's documentation:
+  - Scheduled tasks are billed as subscription usage.
+  - The fire endpoint uses a per-task token.
+  - OAuth credentials may not be used in our own code, and we don't.
+
+**Issues found and fixed while doing this:**
+1. **pg-boss sends failed in production.**
+   - pg-boss asserts on option keys that are present but `undefined` (`priority`, `startAfter`).
+   - Every `PgBossQueue.send` without a priority threw. Tests use the inline queue, so this was invisible.
+   - Fixed: options are now built from defined values only.
+2. **SSRF check skipped literal IP hosts.**
+   - `assertPublicHost` returned early for IP literals.
+   - `assertPublicHttpUrl` blocked the common cases, so this is defence in depth.
+   - Fixed: literal private IPs are now refused.
+3. **DNS resolution behind an egress proxy.**
+   - Behind an egress proxy that resolves names itself, the system resolver fails and every fetch was refused.
+   - Fixed: the check now falls back to a DoH A/AAAA lookup.
+   - `fetch` must use `HTTPS_PROXY`, so `NODE_USE_ENV_PROXY=1` is required. Documented in DEPLOYMENT.md.
+4. **A DNS failure marked discovery sources as permanently blocked.**
+   - Now only robots.txt and private-address refusals block a source; DNS errors are retried.
+5. **Navigation/footer anchors became candidates in the live harvest.**
+   - Examples: "© 2026 Jaarbeurs", "Ga naar Members&rsquo; Benefits &raquo;".
+   - Fixed: anchors are entity-decoded and navigation patterns are rejected. Regression test added.
+6. **Sites that redirect to plain `http://`, or whose certificate covers only `www.`.**
+   - These failed behind an HTTPS-only egress.
+   - Fixed: https upgrade and `www.`/apex fallback, the same as a normal browser. Invalid certificates are still refused.
+
+**Trade-offs:**
+- Per-task token usage is not visible in Subscription Mode, so cost per task is recorded as €0.
+- Throughput is bounded by the plan's usage limits. The pilot measures this (BUILD_STATUS.md).
+- The live pilot confirmed what earlier reviews predicted:
+  - Association member lists skew towards small companies.
+  - Company websites often state no employee count.
+  - Without KvK or another register, many candidates stay "size unknown" and are correctly not qualified.
+  - The highest-yield way to improve volume is better size evidence: KvK, annual-report and ranking sources.
+    Lowering the bar is not an option.

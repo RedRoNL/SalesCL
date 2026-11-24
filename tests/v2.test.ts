@@ -7,7 +7,7 @@ import { setupTestDb } from "./helpers/db";
 import { ScriptedModel } from "./helpers/scriptedModel";
 import { FakeDns, FakeFetch, FakeSearch, DIRECTORY_HOME } from "./helpers/world";
 import { schema, type DB } from "@/db/client";
-import { extractDeterministic, selectSubpages, quoteFound } from "@/research/extract";
+import { extractDeterministic, selectSubpages, quoteFound, focusExcerpt } from "@/research/extract";
 import { classifyDns, technologyConfidence, mailGateway, summarizeEvidence } from "@/domain/msEvidence";
 import { potentialScore, scoreCompany } from "@/domain/scoring";
 import { selectSources, type SourceStat } from "@/discovery/sources";
@@ -139,6 +139,26 @@ describe("discovery-source prioritisation", () => {
     const stats = [mk("recent", { lastHarvestedAt: new Date().toISOString(), priority: 90 }), mk("blocked", { status: "blocked" }), mk("ok", { priority: 20 })];
     expect(selectSources(stats, "manufacturing", 3, 0).map((p) => p.sourceId)).toEqual(["ok"]);
   });
+  it("focus excerpt drops navigation and keeps fact lines verbatim", () => {
+    const nav = Array.from({ length: 200 }, (_, i) => `Menu ${i} [https://www.acme.example/m${i}]`).join("\n");
+    const text = `${nav}\nProducten\nOver ons\n${"Lorem ipsum dolor sit amet consectetur adipiscing elit. ".repeat(80)}\nBij Acme Synthetic B.V. werken ruim 650 medewerkers in Nederland.`;
+    const ex = focusExcerpt(text, 1500);
+    expect(ex).toContain("Bij Acme Synthetic B.V. werken ruim 650 medewerkers in Nederland.");
+    expect(ex).not.toContain("Menu 1 [");
+    expect(quoteFound(text, "werken ruim 650 medewerkers in Nederland")).toBe(true);
+  });
+
+  it("never turns navigation/footer anchors into company names (live-harvest regression)", () => {
+    const c = linkCandidates({ url: "https://beurs.example/", links: [
+      { href: "https://www.organisator.example/", text: "© 2026 Organisator" },
+      { href: "https://leden.example/voordelen", text: "Ga naar Members&rsquo; Benefits &raquo;" },
+      { href: "https://www.echtbedrijf.example/", text: "Echt Bedrijf B.V." },
+    ] });
+    expect(c.find((x) => x.website.includes("echtbedrijf"))?.name).toBe("Echt Bedrijf B.V.");
+    expect(c.map((x) => x.name)).not.toContain("© 2026 Organisator");
+    expect(c.some((x) => /Ga naar|&rsquo;/.test(x.name))).toBe(false);
+  });
+
   it("extracts company candidates from outbound links, skipping platforms and generic anchors", () => {
     const c = linkCandidates({ url: "https://vereniging.example/leden", links: [
       { href: "https://www.lid-een.example/", text: "Lid Een B.V." }, { href: "https://www.linkedin.com/x", text: "LinkedIn" },

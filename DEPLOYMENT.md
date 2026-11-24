@@ -1,28 +1,43 @@
 # DEPLOYMENT
 
-Two processes share one PostgreSQL database:
+**Default (Claude Subscription Mode, see SUBSCRIPTION_MODE.md):** one web process plus PostgreSQL. The AI work runs in
+Claude Code cloud sessions (scheduled tasks) on the existing Claude subscription, and those sessions also advance the
+pipeline ("pump"). **No always-on worker and no Anthropic API key are needed.**
 
-| Process | Command | Scale |
+| Process | Command | Needed? |
 |---|---|---|
-| **web** (Next.js) | `npm run build && npm run start` | 1+ instances behind HTTPS |
-| **worker** (jobs + scheduler) | `npm run worker` | 1 instance (more is safe: pg-boss locks jobs; raise `WORKER_CONCURRENCY` first) |
+| **web** (Next.js) | `npm run build && npm run start` | Always: 1 instance behind HTTPS, reachable from the Claude Code environment for `/api/bridge/*` |
+| **worker** (pg-boss scheduler/jobs) | `npm run worker` | Optional in Subscription Mode (watchdog, own cron); **required** in Paid API Mode |
 
-The weekly run is fired by the worker's pg-boss cron — **no browser tab or interactive Claude Code session is involved.**
+The weekly run is started by the Claude Code scheduled task (cron in claude.ai), or by the worker's pg-boss cron in Paid
+API Mode. No browser tab or interactive session is involved either way.
 
-## 0. Recommended hosting architecture
-| Component | Recommendation | Why |
-|---|---|---|
-| Web (Next.js) | Container on **Azure Container Apps** (West Europe) — or any EU container platform | Microsoft-aligned for a Microsoft-security company; Entra ID native; scales to zero is NOT needed |
-| Worker | Second Container App from the same image, `npm run worker`, **min replicas 1** | Must run continuously for the weekly schedule; one replica is enough (raise `WORKER_CONCURRENCY` first) |
-| Database | **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms/B2s, EU), PITR backups; or Supabase EU (use the *session*/direct connection, not the transaction pooler, for the worker) | pg-boss, pg_trgm, relational integrity |
-| Secrets | Azure Key Vault → environment variables for platform values; integration keys via the Setup wizard | Least exposure |
-| Egress | Outbound HTTPS to api.anthropic.com, the DoH resolver, research targets (public web), optionally api.kvk.nl / api.search.brave.com / api.firecrawl.dev | Research needs the public web |
-| Observability | Container logs → Log Analytics; alert on `run.failed`, worker heartbeat older than 3 min | Unattended operation |
-Indicative cost: €40–120/month depending on sizes (verify in the Azure calculator).
+## 0. Hosting options (lowest reliable cost first)
+| Option | What | Indicative cost | Notes |
+|---|---|---|---|
+| **A. Existing Cloud Life server / VM** | Docker Compose (`web` + `db`), reverse proxy with TLS (Caddy/nginx) | €0 extra | Recommended if a managed server with backups exists. Only port 443 is exposed. |
+| **B. One small EU VPS** | Same compose file on a 2 vCPU / 4 GB VPS (e.g. Hetzner, Scaleway, OVH EU) | ≈ €5–10 / month | Enable automatic backups plus a nightly `pg_dump` off the host. |
+| **C. Managed PaaS** | One web container (scale to 1, *not* 0, so the bridge answers) + small managed PostgreSQL (EU) | ≈ €15–40 / month | Azure Container Apps + PostgreSQL Flexible B1ms, Fly, Render, etc. No second container needed. |
+
+Not recommended: exposing a laptop through a tunnel. It depends on the computer being online, which the requirement
+rules out.
+
+Security baseline in every option:
+- HTTPS only.
+- Entra ID sign-in for people. `/api/bridge/*` accepts only the bridge bearer token, which stores no cookies and has no
+  access to users, settings, secrets or exports.
+- `SESSION_SECRET` and `SECRETS_ENCRYPTION_KEY` set, and PostgreSQL not publicly reachable.
+
+Egress from the web host:
+- The public web (research targets) and the DoH resolver.
+- `api.anthropic.com`, only for the optional "start now" trigger or Paid API Mode.
+- Optional KvK, Brave and Firecrawl.
+
+Behind an HTTPS egress proxy, set `NODE_USE_ENV_PROXY=1` (Node ≥ 22.21) so `fetch` uses `HTTPS_PROXY`.
 
 ## 1. Prerequisites
 - Node.js ≥ 22, PostgreSQL 16 (Supabase, Azure Database for PostgreSQL Flexible Server, or self-hosted).
-- Outbound HTTPS from the worker to: `api.anthropic.com`, `api.firecrawl.dev` (if used), `api.kvk.nl` (if used),
+- Outbound HTTPS from the web host (and the worker, if used) to: `api.anthropic.com` (only for the trigger or Paid API Mode), `api.firecrawl.dev` (if used), `api.kvk.nl` (if used),
   the DoH resolver (`cloudflare-dns.com` by default), and the public websites being researched.
 - A secret manager (Azure Key Vault, Supabase/Vercel/Fly secrets…). Never commit `.env`.
 
@@ -73,3 +88,11 @@ After an administrator has signed in through Entra ID, remove `SETUP_TOKEN` from
 - Ship worker and web logs to your log platform; alert on `run.failed`, `weekly.skipped`, worker restarts.
 - Supabase: the app connects server-side with a service DB user; do not expose tables through PostgREST, or enable RLS
   denying the `anon`/`authenticated` roles (the app does not use Supabase Auth).
+
+## 8. Claude Code scheduled task (Claude Subscription Mode)
+Follow SUBSCRIPTION_MODE.md §3. In summary:
+- Environment: network **Limited**, allowlist = dashboard host only.
+- Network secret `Authorization: Bearer <bridge token>` for that host.
+- Variable `SALES_ARMY_URL`.
+- Scheduled task with the wizard prompt and cron `CRON_TZ=Europe/Amsterdam 0 8,11,14,17 * * 1-3`.
+- Optional API trigger whose ID and token go into the wizard.

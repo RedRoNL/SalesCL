@@ -11,7 +11,7 @@ export const maxDuration = 120;
 
 const uuid = z.string().uuid();
 const bodies = {
-  start: z.object({ runId: uuid.optional(), kind: z.enum(["weekly", "manual"]).optional(), target: z.number().int().min(1).max(500).optional(), sessionUrl: z.string().url().regex(/^https:\/\/claude\.ai\//).optional(), payload: z.string().max(65536).optional() }),
+  start: z.object({ runId: uuid.optional(), kind: z.enum(["weekly", "manual", "pilot"]).optional(), preset: z.enum(["manufacturing", "logistics", "operational"]).optional(), target: z.number().int().min(1).max(500).optional(), sessionUrl: z.string().url().regex(/^https:\/\/claude\.ai\//).optional(), payload: z.string().max(65536).optional() }),
   pump: z.object({ maxMs: z.number().int().min(1000).max(110000).optional() }),
   tasks: z.object({ runId: uuid.optional(), limit: z.number().int().min(1).max(25).optional(), agentId: z.string().max(60).optional() }),
   spec: z.object({ taskId: uuid }),

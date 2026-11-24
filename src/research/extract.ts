@@ -159,3 +159,36 @@ export const NON_COMPANY_DOMAINS = new Set([
   "goo.gl", "bit.ly", "mailchimp.com", "cookiebot.com", "w3.org", "wordpress.org", "wordpress.com", "github.com", "maps.google.com", "indeed.com",
   "glassdoor.com", "nationalevacaturebank.nl", "werkzoeken.nl", "monsterboard.nl", "youtu.be", "t.co", "spotify.com", "issuu.com",
 ]);
+
+const FOCUS_RE = /medewerkers|werknemers|collega|employees|people|fte|personeel|werkzame|vestiging|locaties|omzet|b\.?v\.?|n\.?v\.?|stichting|kvk|kamer van koophandel|opgericht|onderdeel van|dochter|groep|group|holding|microsoft|office 365|azure|intune|teams|security|iso ?27001|nen ?7510|nis2|telefoon|tel\.?|\+31|\b0\d{1,3}[ -]?\d/i;
+
+/**
+ * Content-focused excerpt for the single extraction call. Lines are kept VERBATIM (so quotes copied from the excerpt
+ * still verify against the stored page text); navigation-only lines are dropped, and when the budget is tight, lines
+ * that carry size / legal / Microsoft / contact facts are kept first, in page order.
+ */
+export function focusExcerpt(text: string, max = 3500): string {
+  const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const isNav = (l: string) => {
+    const bare = l.replace(/\[[^\]]+\]/g, "").trim();
+    if (bare.length < 3) return true;
+    if (FOCUS_RE.test(bare)) return false;
+    // Short link-only lines (menus, footers) and short label lines without numbers carry no facts.
+    return (/\[https?:[^\]]+\]/.test(l) && bare.length < 40) || (bare.length < 30 && !/\d/.test(bare));
+  };
+  const kept = lines.filter((l) => !isNav(l));
+  const full = kept.join("\n");
+  if (full.length <= max) return full;
+  const keep = new Set<number>();
+  let used = 0;
+  for (const pass of [true, false]) {
+    for (let i = 0; i < kept.length; i++) {
+      if (keep.has(i) || FOCUS_RE.test(kept[i]) !== pass) continue;
+      const len = Math.min(kept[i].length, 600) + 1;
+      if (used + len > max) continue;
+      keep.add(i);
+      used += len;
+    }
+  }
+  return kept.filter((_, i) => keep.has(i)).map((l) => l.slice(0, 600)).join("\n");
+}

@@ -9,11 +9,13 @@ import { TOOLS, toolJsonSchema, type ToolContext } from "@/agents/tools";
 import type { AgentId, ToolName } from "@/agents/types";
 import { ResearchService } from "@/research/service";
 import { buildCapabilities } from "@/pipeline/capabilities";
-import { createRun, getRun, recoverStaleRuns, runStatusSummary } from "@/pipeline/runs";
+import { createRun, getRun, recoverStaleRuns, requeuePending, runStatusSummary } from "@/pipeline/runs";
 import { getQueue, JOBS, type JobName } from "@/pipeline/queue";
 import { runCandidateCounts } from "@/pipeline/candidates";
 import { isoWeek } from "@/domain/normalize";
 import { handlers } from "@/worker/handlers";
+import { workerStatus } from "@/lib/integrations";
+import { startPilot, PILOT_PRESETS, type PilotKey } from "@/lib/pilots";
 
 /**
  * Research bridge: the narrowly scoped interface through which a native Claude Code session
@@ -31,7 +33,7 @@ import { handlers } from "@/worker/handlers";
 
 const subagentSlug = (agentId: string) => agentId.replace(/_/g, "-");
 
-export async function bridgeStart(p: { runId?: string; kind?: "weekly" | "manual"; target?: number; sessionUrl?: string; payload?: string }) {
+export async function bridgeStart(p: { runId?: string; kind?: "weekly" | "manual" | "pilot"; preset?: PilotKey; target?: number; sessionUrl?: string; payload?: string }) {
   const db = getDb();
   const settings = await getSettings();
   let runId = p.runId;
@@ -47,8 +49,14 @@ export async function bridgeStart(p: { runId?: string; kind?: "weekly" | "manual
   }
   let created = false;
   if (!run && !settings.schedule.enabled && !p.kind) return { runId: null, status: "idle", created: false, done: true, note: "Geen open run en de wekelijkse planning staat uit." };
+  if (!run && p.kind === "pilot") {
+    // Zero-cost pilot: budget €0 means no paid provider can be used; the preset fixes 300–5,000 FTE and the sectors.
+    if (!p.preset || !(p.preset in PILOT_PRESETS)) throw new BridgeError(400, "Onbekende pilotpreset");
+    const r = await startPilot(p.preset, 0, false, "claude-code:session");
+    run = await getRun(r.runId);
+  }
   if (!run) {
-    const r = await createRun(p.kind ?? "weekly", { target: p.target ?? settings.schedule.weeklyTarget }, "claude-code:scheduled-task");
+    const r = await createRun(p.kind === "manual" ? "manual" : "weekly", { target: p.target ?? settings.schedule.weeklyTarget }, "claude-code:scheduled-task");
     run = await getRun(r.runId);
     created = r.created;
     if (run && ["completed", "cancelled", "failed"].includes(run.status)) return { runId: run.id, status: run.status, created: false, done: true, note: `Run voor ${isoWeek(new Date(), settings.schedule.timezone)} is al afgerond` };
@@ -56,10 +64,16 @@ export async function bridgeStart(p: { runId?: string; kind?: "weekly" | "manual
   if (!run) throw new Error("Run kon niet worden gestart");
   const sessions = [...(run.executorSessions ?? []), ...(p.sessionUrl ? [{ url: p.sessionUrl, at: new Date().toISOString(), source: "session" }] : [])].slice(-50);
   await db.update(schema.researchRuns).set({ executor: "claude_code", executorSessions: sessions, heartbeatAt: new Date() }).where(eq(schema.researchRuns.id, run.id));
+  // No always-on worker: the session also triggers daily maintenance (learning snapshot, retention), once per day.
+  if (!(await workerStatus()).alive) {
+    const day = new Date().toISOString().slice(0, 10);
+    await (await getQueue()).send(JOBS.learning, {}, { singletonKey: `learning:${day}` });
+    await (await getQueue()).send(JOBS.retention, {}, { singletonKey: `retention:${day}` });
+  }
   // A queued run whose orchestrate job was lost (or an interrupted running run) is re-enqueued; singleton keys prevent doubles.
   const q = await getQueue();
   if (run.status === "queued") await q.send(JOBS.orchestrate, { runId: run.id }, { singletonKey: run.id });
-  else await q.send(JOBS.finalize, { runId: run.id }, { singletonKey: `resume-advance:${run.id}` });
+  else if (run.status === "running") await requeuePending(run.id); // resume every unfinished unit from its checkpoint (idempotent)
   await audit({ actorType: "system", actorId: "bridge", action: "bridge.start", entityType: "research_run", entityId: run.id, details: { created } });
   return { runId: run.id, status: run.status, created, done: false };
 }

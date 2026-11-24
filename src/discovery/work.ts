@@ -33,14 +33,20 @@ async function industryIdOf(code: string | null | undefined) {
 }
 
 /** Deterministic candidates: outbound links to company websites with a usable anchor text. */
+/** Navigation/footer anchors that are never organisation names (seen in live harvests). */
+const NAVIGATION_ANCHOR_RE = /^(©|\(c\)|copyright\b|ga naar\b|naar\b|lees (meer|verder)\b|bekijk\b|meer\b|klik\b|terug\b|volg ons\b|go to\b|read more\b|visit\b)|[»›→]|&[a-z]+;/i;
+function decodeEntities(t: string) {
+  return t.replace(/&(rsquo|lsquo|apos);/g, "'").replace(/&(rdquo|ldquo|quot);/g, '"').replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/&raquo;/g, "»").replace(/&laquo;/g, "«").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+
 export function linkCandidates(page: Pick<FetchedSource, "url" | "links">): { name: string; website: string }[] {
   const own = canonicalDomain(page.url);
   const byDomain = new Map<string, { name: string; website: string }>();
   for (const l of page.links) {
     const d = canonicalDomain(l.href);
     if (!d || d === own || NON_COMPANY_DOMAINS.has(d) || [...NON_COMPANY_DOMAINS].some((x) => d.endsWith("." + x))) continue;
-    const text = l.text.trim();
-    const name = text && text.length >= 2 && text.length <= 80 && !GENERIC_ANCHOR_RE.test(text) && !/^https?:|\.(nl|com|eu)\b/i.test(text) ? text : null;
+    const text = decodeEntities(l.text).replace(/\s+/g, " ").trim();
+    const name = text && text.length >= 2 && text.length <= 80 && !GENERIC_ANCHOR_RE.test(text) && !NAVIGATION_ANCHOR_RE.test(text) && !/^https?:|\.(nl|com|eu)\b/i.test(text) ? text : null;
     if (!byDomain.has(d) || (name && !byDomain.get(d)!.name)) byDomain.set(d, { name: name ?? "", website: `https://${d}` });
   }
   return [...byDomain.values()].map((c) => ({ name: c.name || c.website.replace(/^https:\/\//, "").split(".")[0].replace(/-/g, " "), website: c.website }));
@@ -168,7 +174,9 @@ export async function harvestWork(runId: string, workId: string) {
       return;
     }
     const msg = e instanceof Error ? e.message : String(e);
-    await db.update(schema.discoverySources).set({ lastError: msg.slice(0, 500), status: e instanceof FetchBlockedError ? "blocked" : src.status, statusReason: e instanceof FetchBlockedError ? msg.slice(0, 300) : src.statusReason, lastHarvestedAt: new Date() }).where(eq(schema.discoverySources.id, src.id));
+    // robots.txt / private-address refusals block a source; a DNS failure may be transient and is retried later.
+    const blocked = e instanceof FetchBlockedError && !/niet resolvebaar/.test(msg);
+    await db.update(schema.discoverySources).set({ lastError: msg.slice(0, 500), status: blocked ? "blocked" : src.status, statusReason: blocked ? msg.slice(0, 300) : src.statusReason, lastHarvestedAt: new Date() }).where(eq(schema.discoverySources.id, src.id));
     await finishWork(workId, { status: "failed", error: msg.slice(0, 1000), found: cands.length });
   }
 }

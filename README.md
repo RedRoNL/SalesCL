@@ -31,6 +31,13 @@ research strategy can improve.
 See **REVIEW.md** (findings, fixes, removals), **COSTS.md** (provider comparison, scenarios: realistic ≈ €67/week for 100 qualified),
 the **Setup wizard** (/setup), the **discovery-source database** (/sources) and **live pilots** (/pilots).
 
+## v3: Claude Subscription Mode (zero additional AI cost)
+AI work runs in native Claude Code cloud sessions (scheduled tasks) on the existing Claude subscription, through the
+research bridge and the repository's 11 subagents and skills. There is no API key and no always-on worker; paid API use
+is optional and requires explicit approval.
+
+See **SUBSCRIPTION_MODE.md**.
+
 ## Quick start (development)
 ```bash
 npm ci
@@ -62,5 +69,6 @@ npm run pilot -- --preset manufacturing --budget 15 --approve-budget
 Writes `pilot-report.md` with the 11 verification criteria. Requires API keys; see BUILD_STATUS.md.
 
 ## Documentation
+- SUBSCRIPTION_MODE.md — default execution mode, setup, limits, legal basis
 ARCHITECTURE · AGENTS · SKILLS · RESEARCH_METHODOLOGY · SCORING_MODEL · DATA_MODEL · SECURITY · DEPLOYMENT ·
 OPERATIONS · BUILD_STATUS · CLAUDE.md (instructions for future Claude Code sessions).

@@ -10,13 +10,15 @@
  │ src/lib        auth, settings, budget, analytics, exporter, feedback import    │
  └────┬──────────────────────────────────────────────────────────────────────────┘
       │ enqueue jobs (pg-boss)                     reads/writes
- ┌────▼──────────── Worker (Node, `npm run worker`) ─┐      ┌────────────────────┐
+ ┌────▼── Job execution: bridge "pump" (default) or ─┐
+ │         optional worker (`npm run worker`)        │      ┌────────────────────┐
  │ pg-boss: run-orchestrate, run-candidate,          │◄────►│ PostgreSQL         │
  │ run-finalize, agent-chat, weekly-trigger (cron    │      │ app schema + pgboss│
  │ Mon 08:00 Europe/Amsterdam), watchdog, learning,  │      └────────────────────┘
  │ retention                                         │
  │  src/pipeline  orchestration & checkpointed stages│
- │  src/agents    runtime, 11 agent definitions,     │──► Anthropic Messages API
+ │  src/agents    runtime, 11 agent definitions,     │──► parked for Claude Code (default)
+ │                                                   │    or Anthropic Messages API (Paid API Mode)
  │                tools (least privilege)            │
  │  src/research  providers behind interfaces ───────┼──► Firecrawl / HTTP fetch /
  │  src/domain    pure business logic                │    DNS-over-HTTPS / KvK API
@@ -28,6 +30,23 @@ authorises and validates then calls `src/lib` / `src/pipeline`; **agent runtime*
 (`src/research`); **database** (`src/db`, Drizzle + SQL migrations in `drizzle/`); **scheduler & job execution**
 (`src/worker`, pg-boss); **scoring engine** (`src/domain/scoring.ts`); **export engine** (`src/lib/exporter.ts`);
 **authentication** (`src/lib/auth`); **observability** (`agent_tasks`, `provider_usage`, `audit_logs`, worker logs).
+
+## Execution modes (v3)
+**Claude Subscription Mode (default).** `runAgent` parks each AI task (`agent_tasks.status = awaiting`,
+`executor = claude_code`) and the job runner records it as parked.
+
+A Claude Code cloud session (scheduled task, skill `sales-army-weekly`) then works the run through the research bridge
+(`src/bridge`, `/api/bridge/*`, CLI `npm run army`):
+1. `pump` runs queued jobs inline, replacing the worker.
+2. `tasks`, `spec` and `tool` hand each task to the matching subagent in `.claude/agents`. The subagent searches with
+   native WebSearch; page fetching and DNS stay server-side through the bridge.
+3. `submit` validates the result with Zod and resumes the parked job. The checkpoint plus idempotency key make the
+   re-run return the stored output.
+
+**Paid API Mode** (optional, explicit approval) runs the same tasks in the Messages-API tool loop.
+
+Both modes share the definitions, prompts, schemas, allow-lists and every deterministic gate. Diagram, setup and limits
+are in SUBSCRIPTION_MODE.md.
 
 ## Key decisions
 

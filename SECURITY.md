@@ -42,6 +42,36 @@ they live in code, and the legal assumptions that must be validated by Cloud Lif
 - Firecrawl is only used to render JavaScript-only pages; 401/403/429/CAPTCHA responses are never retried through another provider.
 - Harvested company names, scouted source URLs and extracted fields are only accepted when the text literally occurs in a retrieved page.
 
+## Claude Subscription Mode & research bridge (v3)
+
+**Subscription credentials.** No subscription credential is ever handled by our code. AI work runs inside native Claude
+Code sessions on Anthropic's infrastructure, which is the officially supported use. Using claude.ai OAuth tokens in our
+own code or the Agent SDK is not allowed, and we do not do it.
+
+**Bridge token.**
+- 256-bit random. Only its SHA-256 hash is stored, and comparison is constant-time.
+- In the Claude Code environment it is a *network secret* injected by the egress proxy, so the session never sees it.
+- Rotate it in the wizard; the old token stops working immediately.
+
+**Bridge scope** (`/api/bridge/*`):
+- It grants only: start or resume a run, pump jobs, claim parked tasks, read a task spec, run a tool **that the task's
+  allow-list permits**, submit or fail a task, and read run status.
+- No users, settings, secrets, exclusion management, approvals or exports.
+- Denied tools are audited as `agent.tool_denied`.
+- Rate limited (600 burst, 10/s per IP). Failed authentication is audited.
+
+**Validation.** Results go through the same Zod schemas and deterministic checks as Paid API Mode. Invalid output is
+rejected; after 5 attempts the task fails safely.
+
+**Untrusted input.** The trigger payload is untrusted: only a UUID of an existing run and a known kind are read from it.
+
+**Fire token.** The scheduled-task fire token is stored encrypted (AES-256-GCM), used server-side only, and can only
+start that one task.
+
+**Cloud environment network.** Limited, with the dashboard host as the only allowed host. All page fetches go through
+the server, which applies robots.txt, SSRF checks (including literal private IPs, and a DoH check when only an egress
+proxy resolves names), size limits and provenance.
+
 ## Privacy (GDPR / AVG)
 - **Data minimisation**: company-level data; contacts limited to professional role, and a name only when lawfully public in a professional context on a cited source. No private e-mail addresses, no personal mobile numbers (06-numbers are withheld from exports).
 - Lawful basis recorded per contact (`legitimate_interest_b2b_public_professional_role`) with source and retention date.

@@ -18,10 +18,21 @@ Identity matching is DB-side (`src/pipeline/identity.ts`) — never load all com
 `getSecret()` (env first, then encrypted DB). Keep model calls per company minimal; add new research as deterministic code first.
 Read REVIEW.md before changing the funnel and COSTS.md before adding providers.
 
+## Execution modes (v3)
+Default **Claude Subscription Mode**: `runAgent` parks tasks (`awaiting`). A Claude Code session executes them via the
+research bridge (`src/bridge`, `/api/bridge/*`, `npm run army`) and the skill `.claude/skills/sales-army-weekly`.
+**Paid API Mode** requires `execution.mode = "api"` and `paidApiApproved`, never automatic.
+
+When adding an agent task, also make sure it works parked:
+- Its input is deterministic (needed for the idempotency key).
+- Its job handler is resumable.
+
+Never use subscription credentials in code. See SUBSCRIPTION_MODE.md.
+
 ## Layout
 `src/domain` pure logic (normalisation, dedup, exclusions, eligibility, Microsoft evidence, scoring, services, stats,
 untrusted-content handling) · `src/agents` runtime, definitions, schemas, tools, skills loader · `src/research`
-providers · `src/pipeline` runs, orchestration, stages, queue, chat · `src/lib` auth, settings, budget, analytics,
+providers · `src/pipeline` runs, orchestration, stages, queue, chat · `src/bridge` research bridge for Claude Code sessions · `src/lib` auth, settings, budget, routine trigger, analytics,
 export, feedback import · `src/app` UI + actions + API · `src/worker` job handlers and schedules · `tests/`.
 
 ## Non-negotiable rules (business + security)

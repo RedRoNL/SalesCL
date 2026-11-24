@@ -1,6 +1,28 @@
 # OPERATIONS (runbook)
 
-## Weekly cycle (automatic)
+## Weekly cycle in Claude Subscription Mode (default)
+1. Monday 08:00 Europe/Amsterdam, the Claude Code scheduled task starts. The skill `sales-army-weekly` runs
+   `army start`, which opens this ISO week's run (idempotent) or resumes an open one.
+2. The session loops `pump` → `tasks` → subagents → `submit` until no work is left or limits approach. All progress is
+   in PostgreSQL.
+3. Continuation starts (11:00, 14:00, 17:00, Monday–Wednesday) resume interrupted work. A start with nothing to do
+   ends immediately.
+4. The run page shows genuine status: "Wacht op Claude Code" with the number of parked AI tasks, links to the sessions,
+   and €0 AI cost.
+5. **Start now:** "Start Claude Code-sessie" on a run page uses the official API trigger, if configured in the wizard.
+   A 429 means the trigger or subscription limit was reached; the scheduled start will pick the run up.
+6. Human steps are unchanged: review the list, approve, export, import feedback.
+
+Troubleshooting:
+
+| Symptom | Fix |
+|---|---|
+| Bridge returns 401 | Regenerate the bridge token and update the network secret. |
+| Session reports `SALES_ARMY_URL` missing | Set the environment variable in the Claude Code environment. |
+| Fetches fail in the session | Dashboard host is missing from the allowlist. |
+| Tasks stay "awaiting" | No session ran (check the scheduled task, or the subscription limit); claims are released after 45 minutes. |
+
+## Weekly cycle (Paid API Mode with worker)
 | When (Europe/Amsterdam) | What |
 |---|---|
 | Mon 06:00 | `learning-analyze`: agent performance snapshot, commercial performance, recommendations (Sales Operations Manager) |

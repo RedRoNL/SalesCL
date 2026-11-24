@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { eq, sql, desc } from "drizzle-orm";
+import { and, eq, inArray, sql, desc } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/db/client";
 import { getSettings, type Settings } from "@/lib/settings";
@@ -92,12 +92,22 @@ export async function runAgent<T extends z.ZodType>(
   // ── Claude Subscription Mode: park the task for a native Claude Code session (no API call, no API key).
   if ((await currentExecutor()) === "claude_code") {
     const key = taskKey({ agentId, taskType, runId: opts.runId, companyId: opts.companyId, input: parsedInput });
-    const [existing] = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.idempotencyKey, key)).orderBy(desc(schema.agentTasks.createdAt)).limit(1);
+    let [existing] = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.idempotencyKey, key)).orderBy(desc(schema.agentTasks.createdAt)).limit(1);
+    // Company-scoped tasks run once per company per run: also match on (agent, task, run, company), so a resumed job
+    // finds its result even if the deterministic input changed in between (e.g. a newer excerpting version).
+    if ((!existing || existing.status === "failed") && opts.runId && opts.companyId) {
+      const exact = existing;
+      [existing] = await db.select().from(schema.agentTasks).where(and(eq(schema.agentTasks.executor, "claude_code"), eq(schema.agentTasks.agentId, agentId), eq(schema.agentTasks.taskType, taskType), eq(schema.agentTasks.runId, opts.runId), eq(schema.agentTasks.companyId, opts.companyId), inArray(schema.agentTasks.status, ["succeeded", "awaiting"]))).orderBy(desc(schema.agentTasks.createdAt)).limit(1);
+      existing = existing ?? exact;
+    }
     if (existing?.status === "succeeded" && existing.output) {
       const parsed = task.output.safeParse(existing.output);
       if (parsed.success) return { taskId: existing.id, output: parsed.data as z.infer<T>, costEur: 0, toolCalls: existing.toolCalls };
     }
     if (existing && existing.status === "awaiting") throw new AwaitingExecutor(existing.id, agentId, taskType);
+    // The session gave up on this task (or it kept failing validation): the job ends instead of re-parking forever.
+    // A deliberate retry from the dashboard clears the key of failed tasks first (requeuePending).
+    if (existing && existing.status === "failed") throw new AgentError(existing.error ?? "Claude Code-taak mislukt", existing.id, false);
     const tier = task.modelTier ?? agent.modelTier;
     const [parked] = await db.insert(schema.agentTasks).values({
       runId: opts.runId ?? null, agentId, parentTaskId: opts.parentTaskId ?? null, companyId: opts.companyId ?? null, taskType,

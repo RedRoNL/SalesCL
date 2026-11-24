@@ -9,7 +9,7 @@ import { modelAvailable } from "@/agents/model";
 import { AwaitingExecutor } from "@/agents/executor";
 import * as S from "@/agents/schemas";
 import { ResearchService } from "@/research/service";
-import { extractDeterministic, quoteFound, NON_COMPANY_DOMAINS, type DeterministicProfile, type ExtractPage } from "@/research/extract";
+import { extractDeterministic, quoteFound, NON_COMPANY_DOMAINS, type DeterministicProfile, type ExtractPage, focusExcerpt } from "@/research/extract";
 import { canonicalDomain, normalizeCompanyName, normalizePhoneNL, normalizeLegalForm, employeeEstimate } from "@/domain/normalize";
 import { classifyDns, summarizeEvidence, technologyConfidence, validateAgentClaim, CLASS_RANK, type MsTech, type EvidenceClass } from "@/domain/msEvidence";
 import { scoreCompany, potentialScore, templateRationale, DEFAULT_SCORING, type ScoringConfig, type ScoringInput } from "@/domain/scoring";
@@ -219,8 +219,8 @@ async function stageExtract(runId: string, companyId: string, research: Research
   const det = screen.det;
   const { output: o } = await runAgent<typeof S.ExtractProfileOutput>("company_research_specialist", "extract_profile", {
     companyId, name: c.officialName, domain: c.canonicalDomain, industryHint: hint?.code ?? null,
-    deterministic: det ? { phone: det.bestPhone?.value, kvk: det.bestKvk?.value, legalForm: det.bestLegalForm?.value, employees: det.bestEmployees ? { value: det.bestEmployees.value, quote: det.bestEmployees.quote } : null } : null,
-    pages: pages.slice(0, 6).map((p) => ({ sourceId: p.sourceId, kind: p.kind, url: p.url, content: textOf(p.sourceId).slice(0, 3500) })),
+    deterministic: det ? { phone: det.bestPhone?.value, kvk: det.bestKvk?.value, legalForm: det.bestLegalForm?.value, employees: det.bestEmployees ? { value: det.bestEmployees.value, quote: det.bestEmployees.quote, sourceId: det.bestEmployees.sourceId } : null } : null,
+    pages: pages.slice(0, 6).map((p) => ({ sourceId: p.sourceId, kind: p.kind, url: p.url, content: focusExcerpt(textOf(p.sourceId), 3500) })),
   }, { runId, companyId, research });
 
   // Code-side verification: every quoted field must literally occur in its source.

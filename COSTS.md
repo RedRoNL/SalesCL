@@ -3,6 +3,26 @@
 _Prices researched 2026-11-24; vendor pages and third-party summaries disagree in places — verify before contracting.
 The live estimate for your configuration is shown in **Setup → Budget**; the model is `src/lib/costModel.ts`._
 
+## 0. Default: Claude Subscription Mode — €0 additional AI cost
+- **AI.** All agent tasks run in Claude Code cloud sessions billed to the existing Claude subscription. There is no
+  Anthropic API key and no per-token cost, so the dashboard records AI cost as €0 per task. Usage counts against the
+  plan's limits. When they are reached, work waits for the next window: there is **no automatic fallback to paid API**.
+- **Search.** Native Claude Code WebSearch, included in the subscription. Paid search APIs stay off by default.
+- **Fetching, DNS, extraction, scoring, QA checks, eligibility.** Deterministic code on the dashboard host, €0.
+- **Optional paid items**, each requiring explicit approval: KvK API (€6.20/month + €0.02 per query), Brave, Firecrawl,
+  and Paid API Mode.
+- **Hosting.** €0 on an existing server, ≈€5–10/month on one small VPS, or ≈€15–40/month on PaaS (DEPLOYMENT.md §0).
+  An always-on worker is no longer needed.
+- **Plan advice.** Use a Team or Enterprise seat for business use under the Commercial Terms. Whether one seat's weekly
+  allowance covers 100 qualified prospects must be measured (pilot data in BUILD_STATUS.md). If it doesn't, the options
+  in order are:
+  1. Spread the work over more scheduled starts (Monday–Wednesday).
+  2. Lower the per-company AI work further (more deterministic screening).
+  3. A second seat.
+  4. Only then Paid API Mode, using the scenarios below.
+
+The scenarios below apply **only to the optional Paid API Mode**.
+
 ## 1. Research methods compared
 
 | Method | Price (2026) | Coverage of Dutch 50–5,000 FTE organisations | Reliability / limits | Needed? |
