@@ -306,3 +306,12 @@ export const RationaleBatchOutput = z.object({
     recurringPotential: z.enum(["high", "medium", "low", "unknown"]),
   })).max(20),
 });
+
+// ── Search-template harvest (native web search in Claude Subscription Mode) ──
+export const SearchHarvestInput = z.object({ query: z.string().max(300), sourceType: z.string(), industryName: z.string().nullable() });
+export const FindWebsiteInput = z.object({ companyId: z.string().uuid(), name: z.string(), city: z.string().nullable() });
+export const FindWebsiteOutput = z.object({
+  website: z.string().url().nullable().describe("Officiële website van exact deze organisatie, of null"),
+  sourceId: z.string().uuid().nullable().describe("source_id van de opgehaalde homepage (fetch_page)"),
+  confidence: z.enum(["high", "medium", "low"]),
+});

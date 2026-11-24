@@ -24,14 +24,24 @@ let override: ModelClient | null = null;
 export function setModelClient(c: ModelClient | null) {
   override = c;
 }
+export function hasModelOverride(): boolean {
+  return override !== null;
+}
 let cached: { key: string; client: AnthropicModelClient } | null = null;
 export async function getModelClient(): Promise<ModelClient> {
   if (override) return override;
+  const { getSettings } = await import("@/lib/settings");
+  const s = await getSettings();
+  // Paid API usage is never automatic: it requires Paid API Mode AND an explicit administrator approval.
+  if (s.execution.mode !== "api" || !s.execution.paidApiApproved) throw new Error("Paid API Mode is niet ingeschakeld/goedgekeurd — Claude Subscription Mode gebruikt geen API-sleutel");
   const key = await getSecret("ANTHROPIC_API_KEY");
-  if (!key) throw new Error("ANTHROPIC_API_KEY ontbreekt — stel de Claude API-sleutel in via Setup (/setup)");
+  if (!key) throw new Error("ANTHROPIC_API_KEY ontbreekt — alleen nodig voor Paid API Mode (Setup → Uitvoeringsmodus)");
   if (!cached || cached.key !== key) cached = { key, client: new AnthropicModelClient(key) };
   return cached.client;
 }
+/** True when AI work can proceed: Claude Subscription Mode (deferred to Claude Code) or approved Paid API Mode. */
 export async function modelAvailable(): Promise<boolean> {
-  return Boolean(override || (await getSecret("ANTHROPIC_API_KEY")));
+  if (override) return true;
+  const { executorAvailable } = await import("./executor");
+  return executorAvailable();
 }

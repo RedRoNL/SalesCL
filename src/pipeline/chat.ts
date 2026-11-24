@@ -1,6 +1,7 @@
 import { asc, eq } from "drizzle-orm";
 import { getDb, schema } from "@/db/client";
 import { runAgent } from "@/agents/runtime";
+import { AwaitingExecutor } from "@/agents/executor";
 import type * as S from "@/agents/schemas";
 import type { AgentId } from "@/agents/types";
 import { buildCapabilities } from "./capabilities";
@@ -39,6 +40,12 @@ export async function handleChat(job: ChatJob) {
     ].join("");
     await db.insert(schema.agentMessages).values({ threadId: job.threadId, fromAgent: job.agentId, role: "agent", content: out.reply + extra, taskId: r.taskId });
   } catch (e) {
+    if (e instanceof AwaitingExecutor) {
+      const notes = history.filter((m) => m.role === "system" && m.content.startsWith("In de wachtrij"));
+      if (!notes.length || notes[notes.length - 1].createdAt < lastUser.createdAt)
+        await db.insert(schema.agentMessages).values({ threadId: job.threadId, fromAgent: job.agentId, role: "system", content: "In de wachtrij voor de Claude Code-sessie (Claude Subscription Mode). Het antwoord verschijnt zodra de sessie de taak heeft uitgevoerd." });
+      return;
+    }
     await db.insert(schema.agentMessages).values({ threadId: job.threadId, fromAgent: job.agentId, role: "system", content: `Taak mislukt: ${e instanceof Error ? e.message : String(e)}` });
   }
 }

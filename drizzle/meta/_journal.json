@@ -15,6 +15,13 @@
       "when": 1795531635420,
       "tag": "0001_discovery_funnel_wizard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795536742908,
+      "tag": "0002_subscription_execution",
+      "breakpoints": true
     }
   ]
 }

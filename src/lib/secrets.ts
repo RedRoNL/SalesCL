@@ -13,7 +13,7 @@ import { getSettings } from "@/lib/settings";
  * that must be configured outside the app — or, if absent, an HKDF-derived key
  * from SESSION_SECRET (separate "info" label → independent key material).
  */
-export const SECRET_NAMES = ["ANTHROPIC_API_KEY", "FIRECRAWL_API_KEY", "KVK_API_KEY", "BRAVE_SEARCH_API_KEY", "ENTRA_CLIENT_SECRET"] as const;
+export const SECRET_NAMES = ["ANTHROPIC_API_KEY", "FIRECRAWL_API_KEY", "KVK_API_KEY", "BRAVE_SEARCH_API_KEY", "ENTRA_CLIENT_SECRET", "ROUTINE_FIRE_TOKEN"] as const;
 export type SecretName = (typeof SECRET_NAMES)[number];
 
 function key(): Buffer {

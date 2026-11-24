@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, desc } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, schema } from "@/db/client";
 import { getSettings, type Settings } from "@/lib/settings";
@@ -11,6 +11,7 @@ import { getAgent } from "./definitions";
 import { CLOUD_LIFE_PROFILE, icpText, SECURITY_RULES } from "./knowledge";
 import { loadSkill } from "./skills";
 import { getModelClient } from "./model";
+import { AwaitingExecutor, currentExecutor, jobContext, taskKey } from "./executor";
 import { TOOLS, toolJsonSchema, type ToolContext } from "./tools";
 import type { AgentId, AgentTask, ModelTier, ToolName } from "./types";
 
@@ -87,6 +88,24 @@ export async function runAgent<T extends z.ZodType>(
   const parsedInput = task.input.parse(input);
   const model = resolveModel(settings, agentId, task.modelTier ?? agent.modelTier);
   const db = getDb();
+
+  // ── Claude Subscription Mode: park the task for a native Claude Code session (no API call, no API key).
+  if ((await currentExecutor()) === "claude_code") {
+    const key = taskKey({ agentId, taskType, runId: opts.runId, companyId: opts.companyId, input: parsedInput });
+    const [existing] = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.idempotencyKey, key)).orderBy(desc(schema.agentTasks.createdAt)).limit(1);
+    if (existing?.status === "succeeded" && existing.output) {
+      const parsed = task.output.safeParse(existing.output);
+      if (parsed.success) return { taskId: existing.id, output: parsed.data as z.infer<T>, costEur: 0, toolCalls: existing.toolCalls };
+    }
+    if (existing && existing.status === "awaiting") throw new AwaitingExecutor(existing.id, agentId, taskType);
+    const tier = task.modelTier ?? agent.modelTier;
+    const [parked] = await db.insert(schema.agentTasks).values({
+      runId: opts.runId ?? null, agentId, parentTaskId: opts.parentTaskId ?? null, companyId: opts.companyId ?? null, taskType,
+      status: "awaiting", input: parsedInput as object, model: `claude-code:${settings.execution.subscriptionModels[tier]}`, executor: "claude_code",
+      idempotencyKey: key, resumeJob: jobContext.getStore() ?? null, attempts: 0,
+    }).returning({ id: schema.agentTasks.id });
+    throw new AwaitingExecutor(parked.id, agentId, taskType);
+  }
 
   const [row] = await db
     .insert(schema.agentTasks)
@@ -221,7 +240,7 @@ export async function runAgent<T extends z.ZodType>(
     }
     return await fail(`Maximaal aantal beurten (${maxTurns}) bereikt zonder resultaat`, true);
   } catch (err) {
-    if (err instanceof AgentError) throw err;
+    if (err instanceof AgentError || err instanceof AwaitingExecutor) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     const budget = err && typeof err === "object" && err.constructor?.name === "BudgetExceededError";
     await persist({ status: "failed", error: msg.slice(0, 2000), finishedAt: new Date() });

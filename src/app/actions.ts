@@ -8,6 +8,7 @@ import { getDb, schema } from "@/db/client";
 import { getCurrentUser } from "@/lib/auth/current";
 import { hasRole, type Role } from "@/lib/auth/session";
 import { audit } from "@/lib/audit";
+import { dispatchRun, fireRoutine } from "@/lib/routine";
 import { createRun, pauseRun, resumeRun, cancelRun, requeuePending } from "@/pipeline/runs";
 import { approveList, decideItem, overrideQa } from "@/lib/lists";
 import { updateSetting, SettingsSchema, type SettingsKey } from "@/lib/settings";
@@ -44,6 +45,7 @@ export async function startRunAction(fd: FormData) {
   });
   if (p.kind === "company" && !p.companyName) throw new Error("Bedrijfsnaam is verplicht voor bedrijfsonderzoek");
   const r = await createRun(p.kind, { target: p.kind === "company" ? 1 : p.target, industries: p.industries?.length ? p.industries : undefined, minEmployees: p.minEmployees, maxEmployees: p.maxEmployees, companyName: p.companyName, companyWebsite: p.companyWebsite, depth: p.depth, instructions: p.instructions }, actor(u), p.budgetEur);
+  if (r.created) await dispatchRun(r.runId, p.kind, actor(u));
   redirect(`/research/${r.runId}`);
 }
 
@@ -236,4 +238,13 @@ export async function setSourceStatusAction(id: string, status: "active" | "reti
   await getDb().update(schema.discoverySources).set({ status, statusReason: `Handmatig: ${status}` }).where(eq(schema.discoverySources.id, z.string().uuid().parse(id)));
   await audit({ actorType: "user", actorId: u.sub, action: "source.status", entityId: id, details: { status } });
   revalidatePath("/sources");
+}
+
+/** Start the Claude Code scheduled task now via the official API trigger (Claude Subscription Mode). */
+export async function fireRoutineAction(runId: string) {
+  const u = await requireActionUser("analyst");
+  z.string().uuid().parse(runId);
+  const r = await fireRoutine({ runId, kind: "continue" }, actor(u));
+  if (!r.ok) throw new Error(r.message);
+  revalidatePath(`/research/${runId}`);
 }

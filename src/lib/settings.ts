@@ -49,7 +49,7 @@ export const ScheduleSchema = z.object({
 
 export const ResearchSchema = z.object({
   /** Default needs no extra subscription (uses the Anthropic account). Brave is the cheapest high-volume option. */
-  searchProvider: z.enum(["anthropic_web_search", "brave", "firecrawl", "none"]).default("anthropic_web_search"),
+  searchProvider: z.enum(["anthropic_web_search", "brave", "firecrawl", "none"]).default("none"),
   fetchProvider: z.enum(["firecrawl", "http"]).default("http"),
   /** Use Firecrawl only to render JavaScript-only pages (never to get past 401/403/CAPTCHA). */
   firecrawlRenderFallback: z.boolean().default(false),
@@ -110,6 +110,27 @@ export const IntegrationsSchema = z.object({
   connectivityTestUrl: z.string().default("https://www.kvk.nl/"),
 });
 
+/**
+ * AI execution mode. "subscription" (default): model work is done by native Claude Code sessions
+ * (cloud scheduled tasks) billed to the existing Claude subscription — no Anthropic API key. "api":
+ * the Messages API (separately billed) — only usable after explicit approval.
+ */
+export const ExecutionSchema = z.object({
+  mode: z.enum(["subscription", "api"]).default("subscription"),
+  paidApiApproved: z.boolean().default(false),
+  paidApiApprovedBy: z.string().default(""),
+  /** Scheduled-task id (trig_…) for the official fire endpoint; its token is stored as secret ROUTINE_FIRE_TOKEN. */
+  routineId: z.string().default(""),
+  /** Public HTTPS URL of this dashboard as reached by Claude Code sessions (bridge base URL). */
+  publicUrl: z.string().default(""),
+  /** SHA-256 of the bridge token (the token itself is shown once and stored as a network secret in the Claude Code environment). */
+  bridgeTokenHash: z.string().default(""),
+  /** Claude Code subagent model per tier (subscription mode). */
+  subscriptionModels: z.object({ fast: z.string().default("sonnet"), standard: z.string().default("sonnet"), strong: z.string().default("opus") }).default({ fast: "sonnet", standard: "sonnet", strong: "opus" }),
+  /** A task not picked up for this long is re-offered (claim expiry). */
+  claimTimeoutMinutes: z.number().int().min(5).max(240).default(45),
+});
+
 export const SettingsSchema = z.object({
   models: ModelConfigSchema.default(ModelConfigSchema.parse({})),
   budget: BudgetSchema.default(BudgetSchema.parse({})),
@@ -122,6 +143,7 @@ export const SettingsSchema = z.object({
   /** agentId -> list of enabled skill names */
   agentSkills: z.record(z.string(), z.array(z.string())).default({}),
   integrations: IntegrationsSchema.default(IntegrationsSchema.parse({})),
+  execution: ExecutionSchema.default(ExecutionSchema.parse({})),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;

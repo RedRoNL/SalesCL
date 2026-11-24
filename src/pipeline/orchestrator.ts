@@ -5,6 +5,7 @@ import { audit } from "@/lib/audit";
 import { BudgetExceededError, spendSince } from "@/lib/budget";
 import { commercialPerformance, marketMap, effectiveIndustryTiers, generateRecommendations } from "@/lib/analytics";
 import { runAgent } from "@/agents/runtime";
+import { AwaitingExecutor } from "@/agents/executor";
 import * as S from "@/agents/schemas";
 import type { AgentId } from "@/agents/types";
 import { ResearchService } from "@/research/service";
@@ -105,6 +106,7 @@ export async function orchestrateRun(runId: string) {
     }
     await heartbeat(runId, "research");
   } catch (err) {
+    if (err instanceof AwaitingExecutor) return; // strategy parked for Claude Code; resumes on submit
     if (err instanceof BudgetExceededError) return void (await pauseRun(runId, "system:budget", err.message));
     await db.update(schema.researchRuns).set({ error: (err instanceof Error ? err.message : String(err)).slice(0, 2000) }).where(eq(schema.researchRuns.id, runId));
     throw err;
@@ -218,6 +220,7 @@ export async function finalizeRun(runId: string) {
         if (override) await db.update(schema.companies).set({ recommendedService: it.recommendedService }).where(eq(schema.companies.id, c.id));
       }
     } catch (e) {
+      if (e instanceof AwaitingExecutor) throw e; // finalisation resumes when the batch rationale is submitted
       if (e instanceof BudgetExceededError) break;
       console.error(`[run ${runId}] rationale batch failed — deterministic rationale kept`, e instanceof Error ? e.message : e);
     }
@@ -271,6 +274,7 @@ export async function finalizeRun(runId: string) {
     managementSummary = output.managementSummary + (output.concerns.length ? `\n\n**Aandachtspunten CSO:**\n- ${output.concerns.join("\n- ")}` : "");
     await db.update(schema.prospectLists).set({ status: output.approveForReview ? "in_review" : "draft" }).where(eq(schema.prospectLists.id, list.id));
   } catch (e) {
+    if (e instanceof AwaitingExecutor) throw e;
     managementSummary = `_Managementsamenvatting kon niet door de CSO worden opgesteld (${e instanceof Error ? e.message : e})._\n\nGeselecteerd: ${selected.length}/${params.target}. QA: ${qaSummary.approved} goedgekeurd, ${qaSummary.rejected} afgewezen, ${qaSummary.needsResearch} aanvullend onderzoek.`;
   }
   await db.update(schema.prospectLists).set({ managementSummary }).where(eq(schema.prospectLists.id, list.id));

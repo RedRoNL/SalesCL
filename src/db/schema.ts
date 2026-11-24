@@ -82,7 +82,7 @@ export const runStatus = pgEnum("run_status", [
   "failed",
 ]);
 export const runKind = pgEnum("run_kind", ["weekly", "manual", "sector", "company", "chat", "pilot"]);
-export const taskStatus = pgEnum("task_status", ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]);
+export const taskStatus = pgEnum("task_status", ["queued", "running", "succeeded", "failed", "cancelled", "skipped", "awaiting"]);
 export const qaVerdict = pgEnum("qa_verdict", ["approved", "rejected", "needs_research"]);
 export const listStatus = pgEnum("list_status", ["draft", "in_review", "approved", "exported"]);
 export const listItemStatus = pgEnum("list_item_status", ["pending", "approved", "rejected"]);
@@ -547,6 +547,10 @@ export const researchRuns = pgTable(
     pauseReason: text("pause_reason"),
     triggeredBy: text("triggered_by").notNull(),
     managementSummary: text("management_summary"),
+    /** api | claude_code */
+    executor: text("executor").notNull().default("api"),
+    /** Claude Code session URLs that worked on this run (from the scheduled-task fire API or the session itself). */
+    executorSessions: jsonb("executor_sessions").$type<{ url: string; at: string; source: string }[]>().default(sql`'[]'::jsonb`),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),
     heartbeatAt: ts("heartbeat_at"),
@@ -629,11 +633,18 @@ export const agentTasks = pgTable(
     toolCalls: integer("tool_calls").notNull().default(0),
     costEur: numeric("cost_eur", { precision: 12, scale: 4 }).notNull().default("0"),
     attempts: integer("attempts").notNull().default(0),
+    /** api (Messages API, paid) | claude_code (subscription: executed by a native Claude Code session via the bridge) */
+    executor: text("executor").notNull().default("api"),
+    /** Deterministic key of (agent, task, run, company, input) so a resumed job picks up a submitted result. */
+    idempotencyKey: text("idempotency_key"),
+    /** Job to re-enqueue when a Claude Code session submits the result. */
+    resumeJob: jsonb("resume_job").$type<{ name: string; data: Record<string, unknown> } | null>(),
+    claimedAt: ts("claimed_at"),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),
     createdAt: createdAt(),
   },
-  (t) => [index("task_agent_idx").on(t.agentId, t.createdAt), index("task_run_idx").on(t.runId), index("task_status_idx").on(t.status)],
+  (t) => [index("task_agent_idx").on(t.agentId, t.createdAt), index("task_run_idx").on(t.runId), index("task_status_idx").on(t.status), index("task_idem_idx").on(t.idempotencyKey)],
 );
 
 /** Inter-agent and user↔agent communication log (Sales Army HQ). */

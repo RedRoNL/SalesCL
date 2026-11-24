@@ -6,6 +6,7 @@ import { BudgetExceededError } from "@/lib/budget";
 import { audit } from "@/lib/audit";
 import { runAgent, AgentError } from "@/agents/runtime";
 import { modelAvailable } from "@/agents/model";
+import { AwaitingExecutor } from "@/agents/executor";
 import * as S from "@/agents/schemas";
 import { ResearchService } from "@/research/service";
 import { extractDeterministic, quoteFound, NON_COMPANY_DOMAINS, type DeterministicProfile, type ExtractPage } from "@/research/extract";
@@ -101,7 +102,14 @@ async function upsertCompliance(companyId: string, patch: Record<string, unknown
 }
 
 // ───────────────────────────── stage: screen (free) ─────────────────────────────
-async function resolveWebsite(name: string, research: ResearchService): Promise<string | null> {
+async function resolveWebsite(name: string, research: ResearchService, ctx?: { runId: string; companyId: string; city: string | null }): Promise<string | null> {
+  if (!research.availability.search && ctx) {
+    // Claude Subscription Mode: the session finds and verifies the website with native search + fetch_page.
+    const { output } = await runAgent<typeof S.FindWebsiteOutput>("company_research_specialist", "find_website", { companyId: ctx.companyId, name, city: ctx.city }, { runId: ctx.runId, companyId: ctx.companyId, research });
+    if (!output.website || output.confidence === "low" || !output.sourceId) return null;
+    const [src] = await getDb().select().from(schema.researchSources).where(eq(schema.researchSources.id, output.sourceId));
+    return src && canonicalDomain(src.url) === canonicalDomain(output.website) ? `https://${canonicalDomain(output.website)}` : null;
+  }
   try {
     const results = await research.search(`${name} officiële website`, 6);
     const tokens = normalizeCompanyName(name).split(" ").filter((t) => t.length > 2);
@@ -126,7 +134,7 @@ async function stageScreen(runId: string, companyId: string, research: ResearchS
     return { pages: null as ExtractPage[] | null, det: null as DeterministicProfile | null };
   }
   if (!c.website) {
-    const site = await resolveWebsite(c.officialName, research);
+    const site = await resolveWebsite(c.officialName, research, { runId, companyId, city: c.nlOfficeCity });
     if (!site) throw new StopCandidate("Geen officiële website gevonden", "needs_research");
     const d = canonicalDomain(site);
     const dup = await findExistingCompany({ name: c.officialName, domain: d, excludeCompanyId: companyId });
@@ -509,7 +517,7 @@ export async function processCandidate(runId: string, companyId: string): Promis
       if (stage === "screen") {
         screen = await stageScreen(runId, companyId, research, settings, bounds);
       } else if (stage === "extract") {
-        if (!(await modelAvailable())) throw new AgentError("ANTHROPIC_API_KEY ontbreekt", "", false);
+        if (!(await modelAvailable())) throw new AgentError("AI-uitvoering niet beschikbaar (Paid API Mode zonder goedkeuring of sleutel)", "", false);
         await stageExtract(runId, companyId, research, settings, screen, bounds);
       } else if (stage === "deep") await stageDeep(runId, companyId, research, settings, bounds);
       else if (stage === "signals") {
@@ -533,6 +541,10 @@ export async function processCandidate(runId: string, companyId: string): Promis
       await db.update(schema.companies).set({ status: reserve ? "candidate" : err.companyStatus, updatedAt: new Date() }).where(and(eq(schema.companies.id, companyId), isNull(schema.companies.deletedAt)));
       await db.update(schema.runCandidates).set({ status: reserve || err.companyStatus === "needs_research" ? "skipped" : "rejected", outcome: err.outcome.slice(0, 1000), updatedAt: new Date() }).where(eq(schema.runCandidates.id, rc.id));
       await bumpStat(runId, reserve ? "reserve" : err.companyStatus);
+    } else if (err instanceof AwaitingExecutor) {
+      // Parked for a Claude Code session; the job resumes from this checkpoint once the result is submitted.
+      await db.update(schema.runCandidates).set({ status: "pending", lastError: `Wacht op Claude Code: ${err.agentId}/${err.taskType}`, attempts: rc.attempts }).where(eq(schema.runCandidates.id, rc.id));
+      return;
     } else if (err instanceof BudgetExceededError) {
       await db.update(schema.runCandidates).set({ status: "pending", lastError: err.message }).where(eq(schema.runCandidates.id, rc.id));
       await pauseRun(runId, "system:budget", err.message);

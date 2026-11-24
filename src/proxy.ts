@@ -1,8 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth/session";
 
-/** Optimistic auth check (cookie only). Authoritative checks happen server-side per route. */
-const PUBLIC = ["/login", "/api/auth/login", "/api/auth/callback", "/api/auth/dev-login", "/api/auth/bootstrap", "/api/health"];
+/** Optimistic auth check (cookie only). Authoritative checks happen server-side per route.
+ *  /api/bridge uses its own bearer-token auth (Claude Code session), never cookies. */
+const PUBLIC = ["/login", "/api/auth/login", "/api/auth/callback", "/api/auth/dev-login", "/api/auth/bootstrap", "/api/health", "/api/bridge"];
 
 export default async function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname;

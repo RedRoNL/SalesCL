@@ -3,7 +3,8 @@ import { desc } from "drizzle-orm";
 import { getDb, schema } from "@/db/client";
 import { getSettings } from "@/lib/settings";
 import { requirePageUser } from "@/lib/auth/current";
-import { integrationStatus } from "@/lib/secrets";
+import { modelAvailable } from "@/agents/model";
+import { routineConfigured } from "@/lib/routine";
 import { startRunAction } from "@/app/actions";
 import { PageHeader, Section, Badge, Field, Button, Empty, eur, dt } from "@/components/ui";
 import { label, tone } from "@/lib/labels";
@@ -11,7 +12,9 @@ import { label, tone } from "@/lib/labels";
 export default async function Research() {
   const user = await requirePageUser("viewer");
   const settings = await getSettings();
-  const integ = await integrationStatus();
+  const aiReady = await modelAvailable();
+  const subscription = settings.execution.mode === "subscription";
+  const routine = subscription && (await routineConfigured());
   const db = getDb();
   const industries = (await db.select().from(schema.industries)).filter((i) => i.priorityTier > 0).sort((a, b) => a.priorityTier - b.priorityTier);
   const runs = await db.select().from(schema.researchRuns).orderBy(desc(schema.researchRuns.createdAt)).limit(30);
@@ -21,7 +24,9 @@ export default async function Research() {
       <PageHeader title="Onderzoekscentrum" subtitle={`Wekelijkse automatische run: ${settings.schedule.enabled ? `${settings.schedule.cron} (${settings.schedule.timezone}), doel ${settings.schedule.weeklyTarget}` : "uitgeschakeld"}. Handmatige, sector- en bedrijfsruns gebruiken dezelfde pijplijn.`} />
       <div className="grid xl:grid-cols-[420px_1fr] gap-8">
         <Section title="Nieuwe onderzoeksrun">
-          {!integ.anthropic && <div className="mb-3 text-[12px] text-warn">ANTHROPIC_API_KEY ontbreekt — runs worden aangemaakt maar agents kunnen niet uitvoeren.</div>}
+          {subscription ? (
+            <div className="mb-3 text-[12px] text-muted">Claude Subscription Mode: AI-taken draaien in een Claude Code-sessie op je bestaande abonnement (€0 API). {routine ? "Een nieuwe run start direct een sessie via de officiële API-trigger." : "Nieuwe runs worden opgepakt bij de volgende geplande start van de scheduled task."}</div>
+          ) : !aiReady && <div className="mb-3 text-[12px] text-warn">Paid API Mode is niet goedgekeurd of heeft geen sleutel — runs worden aangemaakt maar agents kunnen niet uitvoeren.</div>}
           <form action={startRunAction} className="flex flex-col gap-3 border border-line rounded-lg bg-panel p-4">
             <Field label="Type">
               <select name="kind" defaultValue="manual">

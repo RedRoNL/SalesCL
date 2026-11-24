@@ -46,7 +46,7 @@ export async function buildProviders(settings: Settings): Promise<Providers> {
   const e = env();
   const [anthropic, firecrawl, brave, kvk] = await Promise.all([getSecret("ANTHROPIC_API_KEY"), getSecret("FIRECRAWL_API_KEY"), getSecret("BRAVE_SEARCH_API_KEY"), getSecret("KVK_API_KEY")]);
   const r = settings.research;
-  const sig = JSON.stringify([r.searchProvider, r.fetchProvider, r.dnsProvider, r.registryProvider, r.firecrawlRenderFallback, settings.models.fast, Boolean(anthropic), firecrawl?.slice(-6), brave?.slice(-6), kvk?.slice(-6)]);
+  const sig = JSON.stringify([settings.execution.mode, settings.execution.paidApiApproved, r.searchProvider, r.fetchProvider, r.dnsProvider, r.registryProvider, r.firecrawlRenderFallback, settings.models.fast, Boolean(anthropic), firecrawl?.slice(-6), brave?.slice(-6), kvk?.slice(-6)]);
   if (providerCache?.sig === sig) return providerCache.p;
 
   let search: SearchProvider | null = null;

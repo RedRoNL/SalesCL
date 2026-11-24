@@ -132,6 +132,22 @@ waarvan de voorwaarden scrapen verbieden.`,
         effort: "medium",
         skills: "all",
       },
+      search_harvest: {
+        type: "search_harvest",
+        description: "Zoeksjabloon uitvoeren en organisaties oogsten",
+        input: S.SearchHarvestInput,
+        output: S.DiscoveryOutput,
+        instructions: `Voer de zoekopdracht uit (web_search, of in Claude Code je eigen WebSearch-tool) en open hoogstens 5 relevante resultaten met
+fetch_page (die slaat de bron op en geeft een source_id). Lever de organisaties die op die pagina's genoemd worden (klant in een case,
+werkgever van een vacature, exposant, lid, gerankt bedrijf) met sourceId. Namen letterlijk zoals op de pagina; geen namen uit geheugen.
+Sla platforms, IT-dienstverleners en de publicerende partij (tenzij werkgever/eigen case) over.`,
+        tools: ["web_search", "fetch_page", "lookup_company_db"],
+        maxTurns: 10,
+        modelTier: "fast",
+        effort: "low",
+        skills: "none",
+        maxTokens: 6000,
+      },
       extract_companies: {
         type: "extract_companies",
         description: "Organisaties uit een bronpagina extraheren",
@@ -281,6 +297,20 @@ Contactrollen alleen als ze op de pagina staan; naam alleen in professionele con
         effort: "low",
         skills: "none",
         maxTokens: 6000,
+      },
+      find_website: {
+        type: "find_website",
+        description: "Officiële website van een organisatie vinden",
+        input: S.FindWebsiteInput,
+        output: S.FindWebsiteOutput,
+        instructions: `Vind de officiële website van exact deze Nederlandse organisatie (web_search, of je eigen WebSearch-tool in Claude Code).
+Bevestig door de homepage op te halen met fetch_page en controleer dat naam (en zo mogelijk plaats) overeenkomen. Twijfel → null.`,
+        tools: ["web_search", "fetch_page"],
+        maxTurns: 6,
+        modelTier: "fast",
+        effort: "low",
+        skills: "none",
+        maxTokens: 2000,
       },
       deep_research: {
         type: "deep_research",

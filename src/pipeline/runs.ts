@@ -4,6 +4,7 @@ import { audit } from "@/lib/audit";
 import { getSettings } from "@/lib/settings";
 import { isoWeek } from "@/domain/normalize";
 import { getQueue, JOBS } from "./queue";
+import { currentExecutor } from "@/agents/executor";
 import type { StartRunParams } from "@/agents/tools";
 
 export type RunKind = "weekly" | "manual" | "sector" | "company" | "pilot";
@@ -41,7 +42,7 @@ export async function createRun(kind: RunKind, params: RunParams, triggeredBy: s
   }
   const inserted = await db
     .insert(schema.researchRuns)
-    .values({ kind, params, idempotencyKey: key, targetProspects: params.target, budgetEur: (budgetEur ?? settings.budget.perRunDefaultEur).toFixed(2), triggeredBy, stage: "queued" })
+    .values({ kind, params, idempotencyKey: key, targetProspects: params.target, budgetEur: (budgetEur ?? settings.budget.perRunDefaultEur).toFixed(2), triggeredBy, stage: "queued", executor: await currentExecutor() })
     .onConflictDoNothing({ target: schema.researchRuns.idempotencyKey })
     .returning({ id: schema.researchRuns.id });
   if (!inserted.length) {

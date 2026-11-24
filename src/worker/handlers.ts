@@ -36,8 +36,8 @@ export const handlers: Record<JobName, (data: never) => Promise<void>> = {
     const s = await getSettings();
     if (!s.schedule.enabled) return;
     if (!(await modelAvailable())) {
-      await audit({ actorType: "system", action: "weekly.skipped", details: { reason: "ANTHROPIC_API_KEY ontbreekt" } });
-      throw new Error("Wekelijkse run niet gestart: ANTHROPIC_API_KEY ontbreekt");
+      await audit({ actorType: "system", action: "weekly.skipped", details: { reason: "geen AI-uitvoering beschikbaar (Paid API Mode zonder goedkeuring of sleutel)" } });
+      throw new Error("Wekelijkse run niet gestart: AI-uitvoering niet beschikbaar");
     }
     const r = await createRun("weekly", { target: s.schedule.weeklyTarget }, "system:scheduler");
     await audit({ actorType: "system", action: r.created ? "weekly.started" : "weekly.duplicate_prevented", entityType: "research_run", entityId: r.runId });

@@ -11,6 +11,7 @@
 import { getBoss, JOBS } from "@/pipeline/queue";
 import { env } from "@/lib/env";
 import { handlers, markRunFailed } from "./handlers";
+import { runInJob, AwaitingExecutor } from "@/agents/executor";
 import { syncSchedules } from "./schedule";
 import { getDb, schema } from "@/db/client";
 
@@ -22,8 +23,9 @@ async function main() {
     await boss.work(name, { batchSize: 1, localConcurrency: local }, async (jobs) => {
       for (const job of jobs) {
         try {
-          await (handler as (d: unknown) => Promise<void>)(job.data);
+          await runInJob({ name, data: job.data as Record<string, unknown> }, () => (handler as (d: unknown) => Promise<void>)(job.data));
         } catch (err) {
+          if (err instanceof AwaitingExecutor) continue; // parked for Claude Code — not a failure
           console.error(`[worker] ${name} job ${job.id} failed`, err);
           // Final failure of an orchestrate job → mark the run failed instead of failing silently.
           const data = job.data as { runId?: string };

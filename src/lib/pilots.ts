@@ -14,8 +14,9 @@ export type PilotKey = keyof typeof PILOT_PRESETS;
 
 /** Paid research never starts without an explicit, recorded budget approval. */
 export async function startPilot(key: PilotKey, budgetEur: number, approved: boolean, actor: string) {
-  if (!approved) throw new Error("Expliciete budgetgoedkeuring is vereist voor een live pilot");
-  if (!(budgetEur > 0 && budgetEur <= 200)) throw new Error("Pilotbudget moet tussen €1 en €200 liggen");
+  // Budget €0 = no paid spend (Claude Subscription Mode + free providers). Any paid budget needs explicit approval.
+  if (!(budgetEur >= 0 && budgetEur <= 200)) throw new Error("Pilotbudget moet tussen €0 en €200 liggen");
+  if (budgetEur > 0 && !approved) throw new Error("Expliciete budgetgoedkeuring is vereist voor betaalde pilotkosten");
   const p = PILOT_PRESETS[key];
   const r = await createRun("pilot", { target: p.target, industries: [...p.industries], minEmployees: 300, maxEmployees: 5000, pilot: key }, actor, budgetEur);
   await audit({ actorType: "user", actorId: actor, action: "pilot.started", entityType: "research_run", entityId: r.runId, details: { key, budgetEur, approved } });

@@ -19,7 +19,8 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
     "pilot": "tsx scripts/pilot.ts",
-    "audit:deps": "npm audit --omit=dev"
+    "audit:deps": "npm audit --omit=dev",
+    "army": "tsx scripts/army.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.13.0",

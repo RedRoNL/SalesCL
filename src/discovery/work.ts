@@ -1,10 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, inArray } from "drizzle-orm";
 import { getDb, schema } from "@/db/client";
 import { getSettings } from "@/lib/settings";
 import { BudgetExceededError } from "@/lib/budget";
 import { canonicalDomain } from "@/domain/normalize";
 import { runAgent } from "@/agents/runtime";
 import { modelAvailable } from "@/agents/model";
+import { AwaitingExecutor } from "@/agents/executor";
 import * as S from "@/agents/schemas";
 import type { AgentId } from "@/agents/types";
 import { ResearchService, type FetchedSource } from "@/research/service";
@@ -130,7 +131,18 @@ export async function harvestWork(runId: string, workId: string) {
       }
     } else if (src.kind === "query" && src.query) {
       const query = src.query.replace("{sector}", sector ?? "").replace("{regio}", src.region ?? "").replace(/\s+/g, " ").trim();
-      const results = await research.search(query, 8);
+      if (!research.availability.search) {
+        // No server-side search provider (Claude Subscription Mode default): the Claude Code session searches natively.
+        const { output } = await runAgent<typeof S.DiscoveryOutput>("market_intelligence_director", "search_harvest", { query, sourceType: src.sourceType, industryName: sector }, { runId, research });
+        const srcRows = output.candidates.map((c) => c.sourceId).filter(Boolean) as string[];
+        const texts = new Map((srcRows.length ? await db.select().from(schema.researchSources).where(inArray(schema.researchSources.id, srcRows)) : []).map((r) => [r.id, r.excerpt ?? ""]));
+        for (const c of output.candidates) {
+          if (!c.sourceId || !texts.has(c.sourceId) || !quoteFound(texts.get(c.sourceId)!, c.name)) continue; // must occur on a retrieved page
+          pages++;
+          cands.push({ name: c.name, website: c.website, city: c.city, sourceId: c.sourceId, discoveredBy: "market_intelligence_director", discoverySourceId: src.id, role: "listed", industryId });
+        }
+      }
+      const results = research.availability.search ? await research.search(query, 8) : [];
       for (const r of results.slice(0, 5)) {
         const d = canonicalDomain(r.url);
         if (!d || NON_COMPANY_DOMAINS.has(d)) continue;
@@ -150,6 +162,7 @@ export async function harvestWork(runId: string, workId: string) {
     }).where(eq(schema.discoverySources.id, src.id));
     await finishWork(workId, { status: "done", found: cands.length, newCandidates: created });
   } catch (e) {
+    if (e instanceof AwaitingExecutor) return; // work unit stays pending until Claude Code submits
     if (e instanceof BudgetExceededError) {
       await pauseRun(runId, "system:budget", e.message);
       return;
@@ -191,6 +204,7 @@ export async function scoutWork(runId: string, workId: string) {
     }
     await finishWork(workId, { status: "done", found: output.sources.length, newCandidates: 0 });
   } catch (e) {
+    if (e instanceof AwaitingExecutor) return;
     if (e instanceof BudgetExceededError) return void (await pauseRun(runId, "system:budget", e.message));
     await finishWork(workId, { status: "failed", error: (e instanceof Error ? e.message : String(e)).slice(0, 1000) });
   }
@@ -227,6 +241,7 @@ export async function huntWork(runId: string, workId: string) {
     await db.insert(schema.marketSegments).values({ industryId, sizeBand: agentId, description: output.notes.slice(0, 1000), queriesUsed: output.queriesUsed, sourcesUsed: output.poolsUsed.map((p) => `${p.name}${p.url ? ` (${p.url})` : ""}`), candidatesFound: created, exhaustionEstimate: output.exhaustionEstimate, lastResearchedAt: new Date() });
     await finishWork(workId, { status: "done", found: output.candidates.length, newCandidates: created });
   } catch (e) {
+    if (e instanceof AwaitingExecutor) return;
     if (e instanceof BudgetExceededError) return void (await pauseRun(runId, "system:budget", e.message));
     await finishWork(workId, { status: "failed", error: (e instanceof Error ? e.message : String(e)).slice(0, 1000) });
   }

@@ -12,7 +12,9 @@ import { PILOT_PRESETS, pilotRuns } from "@/lib/pilots";
 import { KIND_LABELS } from "@/lib/historicalImport";
 import { HistoricalImporter } from "@/components/HistoricalImporter";
 import { addExclusionAction } from "@/app/actions";
-import { saveSecretAction, deleteSecretAction, runCheckAction, saveProvidersAction, saveEntraAction, saveBudgetAction, saveScheduleAction, startPilotAction, startFirstRunAction } from "@/app/setup-actions";
+import { saveSecretAction, deleteSecretAction, runCheckAction, saveProvidersAction, saveEntraAction, saveBudgetAction, saveScheduleAction, startPilotAction, startFirstRunAction, saveExecutionAction, generateBridgeTokenAction, testRoutineAction } from "@/app/setup-actions";
+import { BridgeTokenGenerator } from "@/components/BridgeTokenGenerator";
+import { WEEKLY_ROUTINE_PROMPT, RECOMMENDED_ROUTINE_CRON } from "@/lib/routine";
 import { PageHeader, Badge, Button, Field, eur, dt } from "@/components/ui";
 import { label, tone } from "@/lib/labels";
 
@@ -75,40 +77,93 @@ export default async function Setup() {
   const ok = (k: string) => checks[k]?.ok === true;
   const search = s.research.searchProvider;
   const searchReady = (search === "anthropic_web_search" && ok("ANTHROPIC_API_KEY") && s.budget.approvedPaidProviders.includes("anthropic_web_search")) || (search === "brave" && ok("BRAVE_SEARCH_API_KEY") && s.budget.approvedPaidProviders.includes("brave")) || (search === "firecrawl" && ok("FIRECRAWL_API_KEY") && s.budget.approvedPaidProviders.includes("firecrawl"));
-  const platformOk = Boolean(e.SESSION_SECRET) && worker.alive;
+  const subscription = s.execution.mode === "subscription";
+  const x = s.execution;
+  const appHost = (() => { try { return new URL(x.publicUrl ?? e.APP_URL).host; } catch { return "jouw-dashboard.example"; } })();
+  const executionOk = subscription ? Boolean(x.bridgeTokenHash && x.publicUrl) : x.paidApiApproved && ok("ANTHROPIC_API_KEY");
+  // In Claude Subscription Mode the pipeline is advanced by the Claude Code session ("pump"): no always-on worker needed.
+  const platformOk = Boolean(e.SESSION_SECRET) && (subscription || worker.alive);
   const realistic = estimateWeeklyCost({ ...SCENARIOS.realistic, qualifiedPerWeek: s.schedule.weeklyTarget }, { kvk: s.research.registryProvider === "kvk", firecrawlSubscription: Boolean(secrets.FIRECRAWL_API_KEY.source) });
   const conservative = estimateWeeklyCost({ ...SCENARIOS.conservative, qualifiedPerWeek: s.schedule.weeklyTarget }, { kvk: s.research.registryProvider === "kvk", firecrawlSubscription: Boolean(secrets.FIRECRAWL_API_KEY.source) });
   const [cronM, cronH, , , cronDow] = s.schedule.cron.split(" ");
-  const readyForLive = ok("ANTHROPIC_API_KEY") && searchReady && worker.alive && ok("connectivity");
+  const readyForLive = subscription ? executionOk && ok("connectivity") : executionOk && searchReady && worker.alive && ok("connectivity");
   const redirect = `${e.APP_URL.replace(/\/$/, "")}/api/auth/callback`;
 
   return (
     <>
       <PageHeader title="Setup" subtitle="Doorloop deze stappen één keer. Elke stap toont de werkelijke operationele status. Wat buiten de applicatie moet gebeuren staat per stap aangegeven." />
 
-      <Step n={1} title="Platform & worker" status={platformOk ? (e.SECRETS_ENCRYPTION_KEY ? "ok" : "warn") : "todo"} outside="hosting, PostgreSQL, en de omgevingsvariabelen DATABASE_URL, APP_URL, SESSION_SECRET, SECRETS_ENCRYPTION_KEY en SETUP_TOKEN (zie DEPLOYMENT.md). De worker draait als apart proces.">
+      <Step n={1} title="Platform & worker" status={platformOk ? (e.SECRETS_ENCRYPTION_KEY ? "ok" : "warn") : "todo"} outside="hosting, PostgreSQL, en de omgevingsvariabelen DATABASE_URL, APP_URL, SESSION_SECRET, SECRETS_ENCRYPTION_KEY en SETUP_TOKEN (zie DEPLOYMENT.md). In Claude Subscription Mode is de worker optioneel.">
         <ul className="space-y-1">
           <li>Database: <Badge tone="ok">verbonden</Badge></li>
           <li>SESSION_SECRET: <Badge tone={e.SESSION_SECRET ? "ok" : "bad"}>{e.SESSION_SECRET ? "ingesteld" : "ontbreekt"}</Badge></li>
           <li>SECRETS_ENCRYPTION_KEY: <Badge tone={e.SECRETS_ENCRYPTION_KEY ? "ok" : "warn"}>{e.SECRETS_ENCRYPTION_KEY ? "ingesteld" : "niet ingesteld — sleutels worden versleuteld met een van SESSION_SECRET afgeleide sleutel"}</Badge></li>
           <li>APP_URL: <span className="font-mono text-[12px]">{e.APP_URL}</span></li>
-          <li>Worker: <Badge tone={worker.alive ? "ok" : "bad"}>{worker.message}</Badge> {worker.schedule && <span className="text-muted">planning {worker.schedule}</span>}</li>
+          <li>Worker: <Badge tone={worker.alive ? "ok" : subscription ? "muted" : "bad"}>{worker.alive ? worker.message : subscription ? "niet nodig in Claude Subscription Mode (de Claude Code-sessie stuwt de pijplijn)" : worker.message}</Badge> {worker.schedule && <span className="text-muted">planning {worker.schedule}</span>}</li>
         </ul>
       </Step>
 
-      <Step n={2} title="Claude API (Anthropic)" status={ok("ANTHROPIC_API_KEY") ? "ok" : "todo"} outside="maak een API-sleutel aan in de Anthropic Console (console.anthropic.com) en stel daar een maandlimiet in.">
-        <SecretField name="ANTHROPIC_API_KEY" label="ANTHROPIC_API_KEY" status={secrets.ANTHROPIC_API_KEY} check={checks.ANTHROPIC_API_KEY} />
-        <p className="text-[12px] text-faint">Validatie gebruikt de gratis Models-API. Modellen: snel {s.models.fast}, standaard {s.models.standard}, sterk {s.models.strong} (Instellingen → AI-modelconfiguratie).</p>
+      <Step n={2} title="AI-uitvoering" status={executionOk ? "ok" : "todo"} outside={subscription ? "maak op claude.ai/code een scheduled task aan voor deze repository (zie hieronder) en zet in de cloud-omgeving het dashboard-domein op de netwerk-allowlist met het bridge-token als network secret." : "maak een API-sleutel aan in de Anthropic Console met een maandlimiet."}>
+        <form action={saveExecutionAction} className="grid md:grid-cols-2 gap-3 mb-4">
+          <Field label="Uitvoeringsmodus" hint="Claude Subscription Mode voert alle agenttaken uit in een native Claude Code-sessie op je bestaande abonnement: geen API-sleutel, geen extra AI-kosten.">
+            <div className="flex flex-col gap-1">
+              <label className="flex gap-2 items-center"><input type="radio" name="mode" value="subscription" defaultChecked={subscription} /> Claude Subscription Mode (standaard, €0 extra)</label>
+              <label className="flex gap-2 items-center"><input type="radio" name="mode" value="api" defaultChecked={!subscription} /> Paid API Mode (Anthropic API, betaald per gebruik)</label>
+            </div>
+          </Field>
+          <Field label="Goedkeuring Paid API Mode" hint="Alleen nodig voor Paid API Mode. Er wordt nooit automatisch overgeschakeld als abonnementslimieten bereikt zijn.">
+            <label className="flex gap-2 items-start text-[12px]"><input type="checkbox" name="paidApiApproved" defaultChecked={x.paidApiApproved} /> Ik keur betaald API-gebruik expliciet goed (wordt vastgelegd in de auditlog)</label>
+          </Field>
+          <Field label="Publieke dashboard-URL (https)" hint="Waarop de Claude Code-sessie de bridge bereikt."><input name="publicUrl" defaultValue={x.publicUrl ?? ""} placeholder="https://sales.cloudlife.example" /></Field>
+          <Field label="Scheduled-task-ID (optioneel, voor 'nu starten')" hint="trig_… — uit de API-trigger van de scheduled task."><input name="routineId" defaultValue={x.routineId ?? ""} placeholder="trig_01…" /></Field>
+          <Field label="Modellen in de Claude Code-sessie" hint="Sonnet voor routinewerk; Opus alleen voor de wekelijkse strategie en eindbeoordeling.">
+            <div className="flex gap-2">
+              <select name="modelFast" defaultValue={x.subscriptionModels.fast}><option value="sonnet">snel: sonnet</option><option value="haiku">snel: haiku</option></select>
+              <select name="modelStandard" defaultValue={x.subscriptionModels.standard}><option value="sonnet">standaard: sonnet</option><option value="opus">standaard: opus</option></select>
+              <select name="modelStrong" defaultValue={x.subscriptionModels.strong}><option value="opus">sterk: opus</option><option value="sonnet">sterk: sonnet</option></select>
+            </div>
+          </Field>
+          <div className="md:col-span-2"><Button>Opslaan</Button></div>
+        </form>
+        {subscription ? (
+          <div className="flex flex-col gap-3">
+            <div>
+              <div className="text-muted mb-1">Bridge-token {x.bridgeTokenHash ? <Badge tone="ok">ingesteld</Badge> : <Badge tone="bad">niet ingesteld</Badge>}</div>
+              <BridgeTokenGenerator action={generateBridgeTokenAction} configured={Boolean(x.bridgeTokenHash)} />
+            </div>
+            <SecretField name="ROUTINE_FIRE_TOKEN" label="API-triggertoken van de scheduled task (optioneel, sk-ant-oat01-…)" status={secrets.ROUTINE_FIRE_TOKEN} check={checks.ROUTINE_FIRE_TOKEN} />
+            <div className="flex items-center gap-2">
+              <form action={testRoutineAction}><Button variant="ghost" disabled={!x.routineId || !secrets.ROUTINE_FIRE_TOKEN.source}>Test: start scheduled task nu</Button></form>
+              {checks.routine && <Badge tone={checks.routine.ok ? "ok" : "bad"}>{checks.routine.message}</Badge>}
+            </div>
+            <details className="border border-line rounded-md p-3">
+              <summary className="cursor-pointer font-medium">Scheduled task aanmaken op claude.ai/code (eenmalig)</summary>
+              <ol className="list-decimal ml-5 mt-2 space-y-1 text-[12px]">
+                <li>Cloud-omgeving: netwerktoegang <b>Limited</b> (pakketbeheerders aan) en voeg alleen <code className="font-mono">{appHost}</code> toe aan de allowlist.</li>
+                <li>Voeg in die omgeving een <b>network secret</b> toe voor host <code className="font-mono">{appHost}</code>, header <code className="font-mono">Authorization</code>, prefix <code className="font-mono">Bearer</code>, waarde = het bridge-token hierboven. Zet het token nooit in een omgevingsvariabele, prompt of de repository.</li>
+                <li>Omgevingsvariabele (geen geheim): <code className="font-mono">SALES_ARMY_URL={x.publicUrl ?? `https://${appHost}`}</code></li>
+                <li>Nieuwe scheduled task met deze repository, die omgeving, en schema <code className="font-mono">{RECOMMENDED_ROUTINE_CRON}</code> (maandag 08:00 Europe/Amsterdam plus vervolgstarts die een onderbroken run hervatten).</li>
+                <li>Prompt: <pre className="whitespace-pre-wrap font-mono bg-panel-2 rounded p-2 mt-1">{WEEKLY_ROUTINE_PROMPT}</pre></li>
+                <li>Optioneel: voeg een <b>API-trigger</b> toe, genereer het token en vul hierboven ID en token in om runs direct vanuit het dashboard te starten.</li>
+              </ol>
+            </details>
+          </div>
+        ) : (
+          <>
+            <SecretField name="ANTHROPIC_API_KEY" label="ANTHROPIC_API_KEY" status={secrets.ANTHROPIC_API_KEY} check={checks.ANTHROPIC_API_KEY} />
+            <p className="text-[12px] text-faint">Validatie gebruikt de gratis Models-API. Modellen: snel {s.models.fast}, standaard {s.models.standard}, sterk {s.models.strong} (Instellingen → AI-modelconfiguratie).</p>
+          </>
+        )}
       </Step>
 
-      <Step n={3} title="Onderzoeksproviders" status={searchReady && ok("connectivity") ? "ok" : "todo"}>
+      <Step n={3} title="Onderzoeksproviders" status={(subscription || searchReady) && ok("connectivity") ? "ok" : "todo"}>
         <form action={saveProvidersAction} className="grid md:grid-cols-2 gap-4">
-          <Field label="Zoekprovider (ontdekking)" hint="Claude-webzoekopdrachten vereisen geen extra abonnement (~€0,01 per zoekopdracht). Brave is het goedkoopst bij hoog volume (~€0,005).">
+          <Field label="Zoekprovider (ontdekking)" hint="Standaard 'geen': in Claude Subscription Mode zoekt de Claude Code-sessie zelf met de ingebouwde WebSearch (inbegrepen in het abonnement). Betaalde providers zijn optioneel.">
             <select name="searchProvider" defaultValue={search}>
-              <option value="anthropic_web_search">Claude web search (aanbevolen: geen extra abonnement)</option>
+              <option value="none">Geen server-zoekprovider (aanbevolen: Claude Code WebSearch, €0)</option>
+              <option value="anthropic_web_search">Claude API web search (alleen Paid API Mode)</option>
               <option value="brave">Brave Search API (optioneel, eigen abonnement)</option>
               <option value="firecrawl">Firecrawl search (optioneel, eigen abonnement)</option>
-              <option value="none">Geen (alleen bronnen-oogst zonder zoeken)</option>
             </select>
           </Field>
           <Field label="Betaalde providers expliciet goedkeuren" hint="Zonder goedkeuring wordt een betaalde provider nooit aangeroepen.">
@@ -190,7 +245,7 @@ export default async function Setup() {
         <p className="text-[12px] text-faint mt-1">Een run die zijn budget bereikt pauzeert zichzelf. Weekbudget ≥ conservatieve schatting voorkomt onderbrekingen.</p>
       </Step>
 
-      <Step n={9} title="Wekelijkse planning" status={s.schedule.enabled && worker.alive ? "ok" : "warn"}>
+      <Step n={9} title="Wekelijkse planning" status={s.schedule.enabled && (subscription || worker.alive) ? "ok" : "warn"}>
         <form action={saveScheduleAction} className="flex flex-wrap gap-3 items-end">
           <label className="flex gap-2 items-center"><input type="checkbox" name="enabled" defaultChecked={s.schedule.enabled} /> Automatisch</label>
           <Field label="Dag"><select name="weekday" defaultValue={cronDow}>{["zondag", "maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag"].map((d, i) => <option key={d} value={i}>{d}</option>)}</select></Field>
@@ -199,18 +254,18 @@ export default async function Setup() {
           <Field label="Doel per week"><input name="weeklyTarget" type="number" min={1} max={500} defaultValue={s.schedule.weeklyTarget} /></Field>
           <Button>Opslaan</Button>
         </form>
-        <p className="text-[12px] text-faint mt-1">De worker past de planning binnen een minuut toe ({worker.schedule ?? "worker niet actief"}).</p>
+        <p className="text-[12px] text-faint mt-1">{subscription ? <>In Claude Subscription Mode bepaalt het schema van de scheduled task wanneer er gewerkt wordt (aanbevolen <code className="font-mono">{RECOMMENDED_ROUTINE_CRON}</code>); dit doel en de tijdzone gelden voor de run die de sessie start.</> : <>De worker past de planning binnen een minuut toe ({worker.schedule ?? "worker niet actief"}).</>}</p>
       </Step>
 
       <Step n={10} title="Live pilots en eerste run" status={pilots.some((p) => p.status === "completed") ? "ok" : readyForLive ? "warn" : "todo"}>
-        {!readyForLive && <p className="mb-3 text-warn">Nog niet gereed: vereist een gevalideerde Claude-sleutel, een goedgekeurde zoekprovider, een actieve worker en geslaagde verbindingstest.</p>}
+        {!readyForLive && <p className="mb-3 text-warn">{subscription ? "Nog niet gereed: vereist een bridge-token, de publieke dashboard-URL en een geslaagde verbindingstest (stap 2 en 3)." : "Nog niet gereed: vereist goedgekeurde Paid API Mode met gevalideerde sleutel, een goedgekeurde zoekprovider, een actieve worker en geslaagde verbindingstest."}</p>}
         <div className="grid md:grid-cols-3 gap-3 mb-4">
           {(Object.entries(PILOT_PRESETS) as [keyof typeof PILOT_PRESETS, (typeof PILOT_PRESETS)[keyof typeof PILOT_PRESETS]][]).map(([key, p]) => (
             <form key={key} action={startPilotAction.bind(null, key)} className="border border-line rounded-md p-3 flex flex-col gap-2">
               <div className="font-medium">{p.label}</div>
               <div className="text-[12px] text-muted">{p.industries.join(", ")} · 300–5.000 FTE</div>
-              <Field label="Maximaal budget (€)"><input name="budgetEur" type="number" min={1} max={200} defaultValue={15} /></Field>
-              <label className="flex gap-2 items-start text-[12px]"><input type="checkbox" name="approved" required /> Ik keur betaalde research tot dit bedrag goed</label>
+              <Field label="Maximaal betaald budget (€)" hint={subscription ? "€0 = alleen abonnement en gratis bronnen" : undefined}><input name="budgetEur" type="number" min={0} max={200} defaultValue={subscription ? 0 : 15} /></Field>
+              <label className="flex gap-2 items-start text-[12px]"><input type="checkbox" name="approved" /> Ik keur betaalde research tot dit bedrag goed (alleen nodig bij budget &gt; €0)</label>
               <Button variant="primary" disabled={!readyForLive}>Start pilot</Button>
             </form>
           ))}
@@ -222,8 +277,8 @@ export default async function Setup() {
         )}
         <form action={startFirstRunAction} className="border-t border-line pt-3 flex flex-wrap items-end gap-3">
           <div className="font-medium w-full">Eerste volledige run ({s.schedule.weeklyTarget} prospects)</div>
-          <Field label="Maximaal budget (€)"><input name="budgetEur" type="number" min={1} defaultValue={Math.ceil(conservative.weeklyEur)} /></Field>
-          <label className="flex gap-2 items-center text-[12px]"><input type="checkbox" name="approved" required /> Ik keur betaalde research tot dit bedrag goed</label>
+          <Field label="Maximaal betaald budget (€)"><input name="budgetEur" type="number" min={0} defaultValue={subscription ? 0 : Math.ceil(conservative.weeklyEur)} /></Field>
+          <label className="flex gap-2 items-center text-[12px]"><input type="checkbox" name="approved" /> Ik keur betaalde research tot dit bedrag goed (alleen nodig bij budget &gt; €0)</label>
           <Button variant="primary" disabled={!readyForLive}>Start eerste onderzoeksrun</Button>
         </form>
       </Step>

@@ -5,7 +5,8 @@ import { z } from "zod";
 import { getDb, schema } from "@/db/client";
 import { getRun } from "@/pipeline/runs";
 import { requirePageUser } from "@/lib/auth/current";
-import { runControlAction } from "@/app/actions";
+import { runControlAction, fireRoutineAction } from "@/app/actions";
+import { routineConfigured } from "@/lib/routine";
 import { AGENTS } from "@/agents/definitions";
 import type { AgentId } from "@/agents/types";
 import { PageHeader, Section, Badge, Metrics, Button, Empty, eur, dt } from "@/components/ui";
@@ -27,6 +28,10 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
   const count = (s: string) => cands.filter((x) => x.rc.status === s).length;
   const canCtl = user.role !== "viewer";
   const ctl = (a: "pause" | "resume" | "cancel" | "retry") => runControlAction.bind(null, id, a);
+  const subscription = run.executor === "claude_code";
+  const awaiting = tasks.filter((t) => t.status === "awaiting");
+  const canFire = canCtl && subscription && ["queued", "running"].includes(run.status) && (await routineConfigured());
+  const sessions = (run.executorSessions ?? []).slice(-5).reverse();
   return (
     <>
       <PageHeader
@@ -38,6 +43,7 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
             {canCtl && run.status === "running" && <form action={ctl("pause")}><Button>Pauzeer</Button></form>}
             {canCtl && run.status === "paused" && <form action={ctl("resume")}><Button variant="primary">Hervat</Button></form>}
             {canCtl && ["running", "paused", "queued"].includes(run.status) && <form action={ctl("cancel")}><Button variant="danger">Annuleer</Button></form>}
+            {canFire && <form action={fireRoutineAction.bind(null, id)}><Button variant="primary">Start Claude Code-sessie</Button></form>}
             {canCtl && count("failed") > 0 && <form action={ctl("retry")}><Button>Mislukte taken opnieuw</Button></form>}
             {list && <Link className="rounded-md border border-line-strong px-3 py-1.5 text-[13px]" href={`/lists/${list.id}`}>Weeklijst →</Link>}
           </>
@@ -46,8 +52,15 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
       <Metrics items={[
         { label: "Kandidaten", value: cands.length }, { label: "Open", value: count("pending") + count("in_progress") }, { label: "Gekwalificeerd", value: count("done"), tone: "ok" },
         { label: "Afgewezen", value: count("rejected") }, { label: "Aanvullend onderzoek", value: count("skipped") }, { label: "Mislukt", value: count("failed"), tone: count("failed") ? "bad" : undefined },
-        { label: "Kosten", value: eur(Number(run.costEur)), hint: `budget ${eur(Number(run.budgetEur), 0)}` },
+        { label: "Kosten", value: eur(Number(run.costEur)), hint: subscription ? "AI via Claude-abonnement (€0 API)" : `budget ${eur(Number(run.budgetEur), 0)}` },
       ]} />
+      {subscription && (
+        <div className="mt-4 border border-line rounded-lg bg-panel p-3 text-[12px] text-muted">
+          <b className="text-ink">Claude Subscription Mode</b> · AI-taken worden uitgevoerd door een Claude Code-sessie (scheduled task) met de subagents en skills uit de repository.{" "}
+          {awaiting.length ? <>Er wachten <b className="text-warn">{awaiting.length}</b> AI-taken op de volgende sessie.</> : <>Geen wachtende AI-taken.</>}
+          {sessions.length > 0 && <div className="mt-1">Sessies: {sessions.map((s, i) => <span key={i}>{i ? " · " : ""}<a className="text-accent hover:underline" href={s.url} target="_blank" rel="noreferrer">{dt(new Date(s.at))}</a></span>)}</div>}
+        </div>
+      )}
       {run.managementSummary && <Section title="Managementsamenvatting" className="mt-6"><div className="border border-line rounded-lg bg-panel p-4"><Markdown text={run.managementSummary} /></div></Section>}
       {strategy && (
         <Section title="Strategie (Chief Sales Officer)" className="mt-6">
@@ -80,7 +93,7 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
                 <li key={t.id} className="flex gap-2 items-center">
                   <Badge tone={tone(t.status)}>{label(t.status)}</Badge>
                   <span className="truncate">{AGENTS[t.agentId as AgentId]?.nameNl}: {t.taskType}</span>
-                  <span className="ml-auto text-faint num whitespace-nowrap">{t.toolCalls} tools · {eur(Number(t.costEur), 3)}</span>
+                  <span className="ml-auto text-faint num whitespace-nowrap">{t.toolCalls} tools · {t.executor === "claude_code" ? "abonnement" : eur(Number(t.costEur), 3)}</span>
                 </li>
               ))}
             </ul>

@@ -2,7 +2,7 @@ export const STATUS_LABELS: Record<string, [string, "ok" | "warn" | "bad" | "inf
   candidate: ["Kandidaat", "muted"], researching: ["In onderzoek", "info"], researched: ["Onderzocht", "info"], qualified: ["Gekwalificeerd", "ok"],
   needs_research: ["Aanvullend onderzoek", "warn"], rejected: ["Afgewezen", "bad"], approved: ["Goedgekeurd", "ok"], exported: ["Geleverd", "accent"], excluded: ["Uitgesloten", "bad"],
   queued: ["In wachtrij", "muted"], running: ["Actief", "info"], paused: ["Gepauzeerd", "warn"], cancelled: ["Geannuleerd", "muted"], completed: ["Voltooid", "ok"], failed: ["Mislukt", "bad"],
-  succeeded: ["Geslaagd", "ok"], skipped: ["Overgeslagen", "muted"], pending: ["Open", "muted"], in_progress: ["Bezig", "info"], done: ["Klaar", "ok"],
+  succeeded: ["Geslaagd", "ok"], awaiting: ["Wacht op Claude Code", "warn"], skipped: ["Overgeslagen", "muted"], pending: ["Open", "muted"], in_progress: ["Bezig", "info"], done: ["Klaar", "ok"],
   draft: ["Concept", "muted"], in_review: ["Ter review", "warn"],
   eligible: ["Belbaar", "ok"], restricted: ["Beperkt", "bad"], unknown: ["Onbekend", "warn"], suppressed: ["Onderdrukt", "bad"],
   confirmed: ["Bevestigd", "ok"], strongly_indicated: ["Sterk aangewezen", "accent"], weakly_indicated: ["Zwak aangewezen", "warn"], contradicted: ["Tegengesproken", "bad"],

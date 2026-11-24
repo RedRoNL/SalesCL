@@ -33,6 +33,12 @@ const fail = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(
 
 /** Each validator performs the cheapest possible real call (free where the API allows). */
 export const validators: Record<string, () => Promise<CheckResult>> = {
+  /** Format check only: firing the scheduled task would start a real session (use the explicit test button). */
+  async ROUTINE_FIRE_TOKEN() {
+    const t = await getSecret("ROUTINE_FIRE_TOKEN");
+    if (!t) return { ok: false, message: "Niet ingesteld", checkedAt: now() };
+    return /^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/.test(t) ? { ok: true, message: "Formaat geldig (test met 'start scheduled task nu')", checkedAt: now() } : { ok: false, message: "Onverwacht formaat (verwacht sk-ant-oat01-…)", checkedAt: now() };
+  },
   async ANTHROPIC_API_KEY() {
     const key = await getSecret("ANTHROPIC_API_KEY");
     if (!key) return { ok: false, message: "Niet ingesteld", checkedAt: now() };
