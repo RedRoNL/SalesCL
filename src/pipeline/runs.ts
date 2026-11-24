@@ -121,7 +121,7 @@ export async function requeuePending(runId: string, includeFailed = false) {
   // Re-enqueue unfinished discovery work units.
   if (includeFailed) await db.update(schema.runWork).set({ status: "pending", error: null }).where(and(eq(schema.runWork.runId, runId), eq(schema.runWork.status, "failed")));
   // A deliberate retry re-parks AI tasks that failed in Claude Subscription Mode (their keys no longer match).
-  if (includeFailed) await db.update(schema.agentTasks).set({ idempotencyKey: null }).where(and(eq(schema.agentTasks.runId, runId), eq(schema.agentTasks.status, "failed"), eq(schema.agentTasks.executor, "claude_code")));
+  if (includeFailed) await db.update(schema.agentTasks).set({ idempotencyKey: null, executor: "claude_code:retried" }).where(and(eq(schema.agentTasks.runId, runId), eq(schema.agentTasks.status, "failed"), eq(schema.agentTasks.executor, "claude_code")));
   const pendingWork = await db.select().from(schema.runWork).where(and(eq(schema.runWork.runId, runId), eq(schema.runWork.status, "pending")));
   for (const w of pendingWork) await (await getQueue()).send(w.kind === "harvest" ? JOBS.harvest : w.kind === "scout" ? JOBS.scout : JOBS.hunt, { runId, workId: w.id }, { singletonKey: `${w.id}:${Date.now()}` });
   const statuses = includeFailed ? ["pending", "in_progress", "failed"] : ["pending", "in_progress"];

@@ -97,7 +97,7 @@ export async function runAgent<T extends z.ZodType>(
     // finds its result even if the deterministic input changed in between (e.g. a newer excerpting version).
     if ((!existing || existing.status === "failed") && opts.runId && opts.companyId) {
       const exact = existing;
-      [existing] = await db.select().from(schema.agentTasks).where(and(eq(schema.agentTasks.executor, "claude_code"), eq(schema.agentTasks.agentId, agentId), eq(schema.agentTasks.taskType, taskType), eq(schema.agentTasks.runId, opts.runId), eq(schema.agentTasks.companyId, opts.companyId), inArray(schema.agentTasks.status, ["succeeded", "awaiting"]))).orderBy(desc(schema.agentTasks.createdAt)).limit(1);
+      [existing] = await db.select().from(schema.agentTasks).where(and(eq(schema.agentTasks.executor, "claude_code"), eq(schema.agentTasks.agentId, agentId), eq(schema.agentTasks.taskType, taskType), eq(schema.agentTasks.runId, opts.runId), eq(schema.agentTasks.companyId, opts.companyId), inArray(schema.agentTasks.status, ["succeeded", "awaiting", "failed"]))).orderBy(sql`case ${schema.agentTasks.status} when 'succeeded' then 0 when 'awaiting' then 1 else 2 end`, desc(schema.agentTasks.createdAt)).limit(1);
       existing = existing ?? exact;
     }
     if (existing?.status === "succeeded" && existing.output) {
