@@ -3,11 +3,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const NAV = [
+  { href: "/setup", label: "Setup" },
   { href: "/", label: "Dashboard" },
   { href: "/hq", label: "Sales Army HQ" },
   { href: "/prospects", label: "Prospectdatabase" },
   { href: "/research", label: "Onderzoekscentrum" },
   { href: "/market", label: "Marktinformatie" },
+  { href: "/sources", label: "Ontdekkingsbronnen" },
+  { href: "/pilots", label: "Live pilots" },
   { href: "/lists", label: "Weeklijsten" },
   { href: "/feedback", label: "Belbureau-feedback" },
   { href: "/settings", label: "Instellingen" },

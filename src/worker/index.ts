@@ -12,6 +12,7 @@ import { getBoss, JOBS } from "@/pipeline/queue";
 import { env } from "@/lib/env";
 import { handlers, markRunFailed } from "./handlers";
 import { syncSchedules } from "./schedule";
+import { getDb, schema } from "@/db/client";
 
 async function main() {
   const boss = await getBoss();
@@ -35,8 +36,13 @@ async function main() {
     });
   }
   const schedule = await syncSchedules(boss);
+  const beat = async () => {
+    const value = { at: new Date().toISOString(), schedule: await syncSchedules(boss).catch(() => schedule), pid: process.pid, version: "2" };
+    await getDb().insert(schema.systemSettings).values({ key: "worker_heartbeat", value }).onConflictDoUpdate({ target: schema.systemSettings.key, set: { value, updatedAt: new Date() } });
+  };
+  await beat();
+  setInterval(() => beat().catch((e) => console.error("[worker] heartbeat", e)), 60 * 1000);
   console.log(`[worker] gestart — wekelijkse planning: ${schedule}; kandidaat-concurrency ${concurrency}`);
-  setInterval(() => syncSchedules(boss).catch((e) => console.error("[worker] schedule sync", e)), 5 * 60 * 1000);
   const stop = async () => {
     console.log("[worker] stoppen…");
     await boss.stop({ graceful: true, timeout: 30000 });

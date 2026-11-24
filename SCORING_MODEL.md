@@ -51,3 +51,10 @@ Purview Care; regulated data <300 → Purview Assessment; otherwise → Protect 
 `src/lib/analytics.ts` reports appointment rates by score band with Wilson intervals. If 85–100 converts worse than
 70–84 (with ≥10 calls each), a *scoring_adjustment* recommendation is raised. Weight/threshold changes always require
 an administrator (new version; history preserved; old scores keep their `scoring_config_id`).
+
+## Potential score (v2, used only for routing)
+`potentialScore()` estimates what a company could score once unknowns are researched (bounded expected values for unknown size,
+authority, Microsoft evidence and sector; known negatives are never forgiven). Below the research threshold (default 55) or
+`minScreenScoreForExtraction` no paid research is spent. It is never used for delivery decisions. The final rationale is first
+generated deterministically from the score components (`templateRationale`) and then enriched in batches by the Lead
+Qualification Specialist for the final list.

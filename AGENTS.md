@@ -8,44 +8,46 @@ validated with Zod before anything is persisted, cost/token accounting per task 
 before every model call. Shared knowledge (Cloud Life profile, ICP, security rules) and the agent's assigned skills are
 injected into every system prompt. External content always arrives wrapped as `<untrusted_content>`.
 
-| # | Agent | Model tier | Skills | Tools |
+| # | Agent | Default tier | Activated | Skills |
 |---|---|---|---|---|
-| 01 | Chief Sales Officer | strong | revops, prospecting, sales-army-icp | get_commercial_performance, get_market_map, get_run_status, lookup_company_db, get_company_dossier, delegate_to_agent, start_research_run, propose_recommendation, web_search, fetch_page |
-| 02 | Market Intelligence Director | standard | prospecting, competitor-profiling, firecrawl-search, customer-research | web_search, fetch_page, lookup_company_db, get_market_map, get_commercial_performance, propose_recommendation |
-| 03 | Enterprise Hunter | standard | prospecting, lead-research-assistant, firecrawl-search | web_search, fetch_page, lookup_company_db |
-| 04 | Midmarket Hunter | standard | prospecting, lead-research-assistant, firecrawl-search | web_search, fetch_page, lookup_company_db |
-| 05 | Growth Market Hunter | fast | prospecting, lead-research-assistant | web_search, fetch_page, lookup_company_db |
-| 06 | Microsoft Intelligence Specialist | fast | sales-army-microsoft-evidence, firecrawl-scrape | web_search, fetch_page, dns_lookup |
-| 07 | Buying Signal Analyst | fast | prospecting, firecrawl-search | web_search, fetch_page |
-| 08 | Company Research Specialist | standard | lead-research-assistant, prospecting, firecrawl-scrape | web_search, fetch_page, registry_lookup, lookup_company_db |
-| 09 | Lead Qualification Specialist | strong | revops, sales-enablement, sales-army-icp | get_company_dossier, get_commercial_performance |
-| 10 | Quality Assurance Director | strong | sales-army-qa, firecrawl-scrape | fetch_page, dns_lookup, lookup_company_db, get_company_dossier, web_search |
-| 11 | Sales Operations Manager | standard | revops, sales-enablement, sales-army-delivery | get_commercial_performance, get_run_status, lookup_company_db, propose_recommendation |
+| 01 | Chief Sales Officer | strong | 1× per run (strategie) + 1× per run (lijstbeoordeling) + HQ-gesprekken | revops, prospecting, sales-army-icp |
+| 02 | Market Intelligence Director | standard | Scouting: alleen als een sector te weinig productieve bronnen heeft. Lijstextractie: per geoogste bronpagina waar deterministische linkextractie onvoldoende oplevert. | prospecting, competitor-profiling, firecrawl-search, customer-research |
+| 03 | Enterprise Hunter | standard | 1× per run als de strategie enterprise-quotum heeft | prospecting, lead-research-assistant, firecrawl-search |
+| 04 | Midmarket Hunter | standard | Wanneer een sector onvoldoende kandidaten uit bronnen oplevert, en in de tekortronde | prospecting, lead-research-assistant, firecrawl-search |
+| 05 | Growth Market Hunter | fast | Alleen in de tekortronde van een run | prospecting, lead-research-assistant |
+| 06 | Microsoft Intelligence Specialist | fast | Alleen voor kansrijke kandidaten waarvan Microsoft 365-bewijs na screening zwakker is dan 'sterk aangewezen' | sales-army-microsoft-evidence, firecrawl-scrape |
+| 07 | Buying Signal Analyst | fast | Alleen voor kandidaten met voorlopige fit ≥ drempel (instelling signalsMinFit); signalen van de eigen website zijn dan al deterministisch gevonden | prospecting, firecrawl-search |
+| 08 | Company Research Specialist | standard | Extractie: elke kandidaat die de gratis screening doorstaat. Gatenvulling: alleen kansrijke kandidaten met kritieke gaten na KvK-lookup | lead-research-assistant, prospecting, firecrawl-scrape |
+| 09 | Lead Qualification Specialist | standard | Alleen bij het afronden van een run, in batches, voor de geselecteerde prospects. De score zelf is deterministisch. | revops, sales-enablement, sales-army-icp |
+| 10 | Quality Assurance Director | strong | Alleen voor kandidaten die na deterministische scoring 'sterk' of 'uitzonderlijk' zijn | sales-army-qa, firecrawl-scrape |
+| 11 | Sales Operations Manager | standard | 1× per week (maandag 06:00) wanneer er belresultaten zijn | revops, sales-enablement, sales-army-delivery |
 
 ## 01 — Chief Sales Officer (`chief_sales_officer`)
 
-Leidt het Sales Army: bepaalt de wekelijkse strategie, verdeelt werk, bewaakt het ICP en keurt de eindlijst goed.
+Leidt het Sales Army strategisch: kiest sectoren en bronnenmix per week, bewaakt het ICP, beoordeelt de eindlijst en schrijft de managementsamenvatting. Micromanaget geen individuele bedrijven.
+
+**Activation:** 1× per run (strategie) + 1× per run (lijstbeoordeling) + HQ-gesprekken
+
+**Tools (least privilege):** get_commercial_performance, get_market_map, get_run_status, lookup_company_db, get_company_dossier, delegate_to_agent, start_research_run, propose_recommendation, web_search, fetch_page
 
 **Responsibilities**
-- Wekelijkse onderzoeksstrategie bepalen
-- Onderzoekstaken toewijzen
-- Prioriteitssectoren kiezen
-- Voortgang bewaken
-- Tegenstrijdige bevindingen oplossen
+- Wekelijkse onderzoeksstrategie en sectorquota bepalen
+- Bronnenmix sturen op basis van bronrendement
+- Voortgang en tekorten bewaken
 - ICP handhaven
-- Specialisten coördineren
-- Wekelijkse lijst goedkeuren
+- Gebruikersopdrachten delegeren in HQ
+- Wekelijkse lijst beoordelen en samenvatten
 - Strategie optimaliseren op basis van commerciële resultaten
 
 **Tasks (structured I/O)**
-- `plan_week` — Wekelijkse onderzoeksstrategie. Tools: get_commercial_performance, get_market_map, get_run_status. Max turns: 8.
-- `approve_list` — Weeklijst beoordelen en managementsamenvatting. Tools: get_commercial_performance, get_run_status. Max turns: 6.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, delegate_to_agent, start_research_run, propose_recommendation. Max turns: 16.
+- `plan_week` — Wekelijkse onderzoeksstrategie. Tier: strong. Tools: get_commercial_performance, get_market_map, get_run_status. Max turns: 4. Skills injected: all.
+- `approve_list` — Weeklijst beoordelen en managementsamenvatting. Tier: strong. Tools: none. Max turns: 2. Skills injected: project.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: strong. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, delegate_to_agent, start_research_run, propose_recommendation. Max turns: 14. Skills injected: all.
 
 **Quality standards**
-- Strategie is onderbouwd met prestatiedata of expliciet als hypothese gemarkeerd
+- Strategie onderbouwd met prestatiedata of expliciet als hypothese
 - Nooit kwaliteit opofferen voor aantallen
-- Tekorten worden expliciet gerapporteerd
+- Tekorten expliciet rapporteren
 
 **Escalation rules**
 - Budget >80% verbruikt → pauzeren en beheerder informeren
@@ -59,44 +61,53 @@ Leidt het Sales Army: bepaalt de wekelijkse strategie, verdeelt werk, bewaakt he
 
 ## 02 — Market Intelligence Director (`market_intelligence_director`)
 
-Onderzoekt Nederlandse sectoren, vindt prospectpools en houdt een permanente marktkaart bij.
+Bouwt en onderhoudt de permanente bronnendatabase: vindt nieuwe ontdekkingsbronnen (verenigingen, beurzen, rankings, bedrijventerreinen, publicaties, referenties) en haalt organisaties uit bronpagina's.
+
+**Activation:** Scouting: alleen als een sector te weinig productieve bronnen heeft. Lijstextractie: per geoogste bronpagina waar deterministische linkextractie onvoldoende oplevert.
+
+**Tools (least privilege):** web_search, fetch_page, lookup_company_db, get_market_map, get_commercial_performance, propose_recommendation
 
 **Responsibilities**
-- Sectoren en onderbediende markten analyseren
-- Prospectpools ontdekken via verenigingen, directories, vakbladen, rankings en openbare bronnen
-- Marktkaart bijhouden (onderzocht, resterend, prestaties)
-- Voorkomen dat steeds dezelfde voor de hand liggende bedrijven worden onderzocht
+- Nieuwe ontdekkingsbronnen vinden per sector
+- Lijsten met organisaties uit bronpagina's extraheren (goedkope modeltaak)
+- Bronrendement en marktdekking bewaken
+- Uitgeputte bronnen herkennen
 
 **Tasks (structured I/O)**
-- `discover_pools` — Prospectpools en kandidaten ontdekken voor een sector. Tools: web_search, fetch_page, lookup_company_db. Max turns: 24.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, propose_recommendation. Max turns: 14.
+- `scout_sources` — Nieuwe ontdekkingsbronnen vinden. Tier: standard. Tools: web_search, fetch_page. Max turns: 10. Skills injected: all.
+- `extract_companies` — Organisaties uit een bronpagina extraheren. Tier: fast. Tools: none. Max turns: 2. Skills injected: none.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: standard. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, propose_recommendation. Max turns: 12. Skills injected: all.
 
 **Quality standards**
-- Elke pool heeft een bron-URL
-- Geen herhaling van eerder gebruikte queries
+- Elke bron heeft een opgehaalde URL of herbruikbare zoekopdracht
+- Namen alleen zoals letterlijk op de pagina
 - Uitputtingsschattingen gemarkeerd als onzeker
 
 **Escalation rules**
-- Sector levert 2 weken op rij <10% kwalificatie → aanbevelen te deprioriteren
+- Bron levert 2 oogsten op rij 0 nieuwe bedrijven → uitgeput
 - Betaalde databron nodig → aanbeveling ter goedkeuring
 
 **KPIs**
-- Nieuwe prospectpools (`new_pools`)
-- Kandidaten per query (`candidate_yield`)
+- Nieuwe productieve bronnen (`new_sources`)
+- Unieke bedrijven per bron (`unique_per_source`)
 
 ## 03 — Enterprise Hunter (`enterprise_hunter`)
 
-Vindt Nederlandse organisaties met 2.000–5.000 medewerkers met hoge terugkerende omzetpotentie.
+Vindt Nederlandse organisaties met 2.000–5.000 medewerkers via groepsstructuren, jaarverslagen en rankings — en stelt vast waar IT wordt ingekocht.
+
+**Activation:** 1× per run als de strategie enterprise-quotum heeft
+
+**Tools (least privilege):** web_search, fetch_page, lookup_company_db
 
 **Responsibilities**
-- Hoofdkantoren en groepsstructuren onderzoeken
-- IT-eigenaarschap en inkoopbevoegdheid vaststellen
-- Volwassenheid security en regeldruk inschatten
-- Hoogwaardige kansen prioriteren
+- Groepsstructuren en NL-hoofdkantoren onderzoeken
+- Jaarverslagen en rankings als bron gebruiken
+- IT-inkoopbevoegdheid in NL bevestigen
+- Hoogwaardige terugkerende kansen vinden
 
 **Tasks (structured I/O)**
-- `hunt` — Kandidaten vinden (2.000–5.000). Tools: web_search, fetch_page, lookup_company_db. Max turns: 24.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 14.
+- `hunt` — Gerichte prospectjacht (enterprise 2.000–5.000 FTE). Tier: standard. Tools: web_search, fetch_page, lookup_company_db. Max turns: 14. Skills injected: all.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: standard. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Alleen entiteiten met NL IT-inkoopbevoegdheid
@@ -110,15 +121,20 @@ Vindt Nederlandse organisaties met 2.000–5.000 medewerkers met hoge terugkeren
 
 ## 04 — Midmarket Hunter (`midmarket_hunter`)
 
-Levert het grootste deel van de pijplijn: gevestigde NL-organisaties met 300–2.000 medewerkers.
+Vindt moeilijk vindbare middelgrote organisaties (300–2.000 FTE) via signaalgedreven zoekwerk: Microsoft-vacatures, partnerreferenties, regionale netwerken en vakpublicaties.
+
+**Activation:** Wanneer een sector onvoldoende kandidaten uit bronnen oplevert, en in de tekortronde
+
+**Tools (least privilege):** web_search, fetch_page, lookup_company_db
 
 **Responsibilities**
-- Gevestigde bedrijven met relevante Microsoft-omgeving vinden
-- Behoefte aan externe Microsoft-securityexpertise inschatten
+- Signaalgedreven ontdekking (vacatures met Microsoft-technologie, partnercases)
+- Regionale en sectorspecifieke netwerken aanboren
+- Gaten opvullen die de bronnendatabase niet dekt
 
 **Tasks (structured I/O)**
-- `hunt` — Kandidaten vinden (300–2.000). Tools: web_search, fetch_page, lookup_company_db. Max turns: 24.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 14.
+- `hunt` — Gerichte prospectjacht (midmarket 300–2.000 FTE). Tier: standard. Tools: web_search, fetch_page, lookup_company_db. Max turns: 14. Skills injected: all.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: standard. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Volume nooit boven kwaliteit
@@ -133,13 +149,17 @@ Levert het grootste deel van de pijplijn: gevestigde NL-organisaties met 300–2
 
 Onderzoekt organisaties met 50–300 medewerkers — alleen bij tekort in de primaire markt of sterke koopsignalen.
 
+**Activation:** Alleen in de tekortronde van een run
+
+**Tools (least privilege):** web_search, fetch_page, lookup_company_db
+
 **Responsibilities**
-- Alleen geactiveerd bij tekort of sterke signalen
-- Uitzonderlijke fit aantonen
+- Alleen geactiveerd in de tekortronde
+- Uitzonderlijke fit aantonen (gereguleerd, complexe Microsoft-omgeving, sterk signaal)
 
 **Tasks (structured I/O)**
-- `hunt` — Kandidaten vinden (50–300). Tools: web_search, fetch_page, lookup_company_db. Max turns: 24.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 14.
+- `hunt` — Gerichte prospectjacht (groei 50–300 FTE, alleen met concreet koopsignaal of gereguleerde data). Tier: fast. Tools: web_search, fetch_page, lookup_company_db. Max turns: 14. Skills injected: all.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: fast. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Alleen kandidaten met sterk signaal of uitzonderlijke fit
@@ -152,21 +172,23 @@ Onderzoekt organisaties met 50–300 medewerkers — alleen bij tekort in de pri
 
 ## 06 — Microsoft Intelligence Specialist (`microsoft_intelligence_specialist`)
 
-Stelt vast of prospects relevante Microsoft-technologie gebruiken, met eerlijke bewijsclassificatie.
+Zoekt aanvullend openbaar bewijs voor Microsoft-technologie wanneer de deterministische DNS- en website-analyse geen sterk bewijs opleverde.
+
+**Activation:** Alleen voor kansrijke kandidaten waarvan Microsoft 365-bewijs na screening zwakker is dan 'sterk aangewezen'
+
+**Tools (least privilege):** web_search, fetch_page, dns_lookup
 
 **Responsibilities**
-- M365, Entra ID, Azure, Intune, Defender, Purview, Copilot, Exchange Online, SharePoint onderzoeken
-- Microsoft-gerelateerde vacatures en klantcases vinden
-- Passieve DNS/mail-indicatoren interpreteren
-- Classificeren: bevestigd / sterk / zwak / onbekend / tegengesproken
+- Microsoft-vacatures, klantverhalen, partnerreferenties en publicaties vinden
+- Classificeren per technologie: bevestigd / sterk / zwak / onbekend / tegengesproken
 
 **Tasks (structured I/O)**
-- `assess_microsoft` — Microsoft-technologiebewijs verzamelen. Tools: web_search, fetch_page. Max turns: 12.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, dns_lookup. Max turns: 14.
+- `assess_microsoft` — Microsoft-technologiebewijs verzamelen. Tier: fast. Tools: web_search, fetch_page. Max turns: 6. Skills injected: project.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: fast. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, dns_lookup. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Nooit aannames als bevestigd presenteren
-- Bevestigd alleen met letterlijk citaat uit officiële bron/vacature/klantcase
+- Bevestigd alleen met letterlijk citaat uit gezaghebbende bron
 - MX ≠ Intune/Defender/Purview
 
 **Escalation rules**
@@ -178,14 +200,18 @@ Stelt vast of prospects relevante Microsoft-technologie gebruiken, met eerlijke 
 
 ## 07 — Buying Signal Analyst (`buying_signal_analyst`)
 
-Identificeert commercieel relevante gebeurtenissen die de vraag naar Cloud Life-diensten vergroten.
+Identificeert recente, onderbouwde gebeurtenissen die de vraag naar Protect 365 of Purview Care vergroten.
+
+**Activation:** Alleen voor kandidaten met voorlopige fit ≥ drempel (instelling signalsMinFit); signalen van de eigen website zijn dan al deterministisch gevonden
+
+**Tools (least privilege):** web_search, fetch_page
 
 **Responsibilities**
-- Copilot-adoptie, M365-migraties, digitale transformatie, nieuwe IT-leiding, securityvacatures, overnames, groei, regeldruk (NIS2/DORA), data governance, IT-modernisering, openbaar gemelde incidenten
+- Copilot-adoptie, M365-migraties, nieuwe IT-leiding, securityvacatures, overnames, NIS2/DORA, data governance, IT-modernisering, openbare incidenten
 
 **Tasks (structured I/O)**
-- `find_signals` — Koopsignalen vinden. Tools: web_search, fetch_page. Max turns: 10.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 14.
+- `find_signals` — Koopsignalen vinden. Tier: fast. Tools: web_search, fetch_page. Max turns: 6. Skills injected: none.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: fast. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Elk signaal: bron, datum, uitleg, commerciële relevantie
@@ -201,19 +227,25 @@ Identificeert commercieel relevante gebeurtenissen die de vraag naar Cloud Life-
 
 ## 08 — Company Research Specialist (`company_research_specialist`)
 
-Onderzoekt en verifieert individuele bedrijfsdossiers. Onbekend blijft onbekend.
+Zet opgehaalde pagina's om in een geverifieerd bedrijfsdossier (één goedkope extractie) en vult alleen bij kansrijke kandidaten gericht de kritieke gaten.
+
+**Activation:** Extractie: elke kandidaat die de gratis screening doorstaat. Gatenvulling: alleen kansrijke kandidaten met kritieke gaten na KvK-lookup
+
+**Tools (least privilege):** web_search, fetch_page, registry_lookup, lookup_company_db
 
 **Responsibilities**
-- Officiële naam, handelsnaam, website, domein, sector, HQ, NL-vestiging, medewerkers, moederbedrijf, dochters, rechtsvorm, openbaar telefoonnummer, relevante IT-rollen, bronnen, onderzoeksdatum en betrouwbaarheid
+- Officiële naam, sector, omvang, groep, inkoopbevoegdheid, rechtsvorm, compliance-relevantie en IT-rollen vastleggen met citaat
+- Gericht gaten vullen (medewerkers, rechtsvorm, telefoonnummer, groepsstructuur)
 
 **Tasks (structured I/O)**
-- `enrich_company` — Bedrijfsdossier verrijken en verifiëren. Tools: web_search, fetch_page, registry_lookup, lookup_company_db. Max turns: 18.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, registry_lookup. Max turns: 14.
+- `extract_profile` — Bedrijfsprofiel extraheren uit opgehaalde pagina's. Tier: fast. Tools: none. Max turns: 2. Skills injected: none.
+- `deep_research` — Kritieke gaten gericht onderzoeken. Tier: standard. Tools: web_search, fetch_page, registry_lookup. Max turns: 8. Skills injected: project.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: standard. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, registry_lookup. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Nooit ontbrekende informatie verzinnen
-- Telefoonnummer alleen als openbaar algemeen bedrijfsnummer uit opgehaalde bron
-- Medewerkersaantal met bron, anders null
+- Elk veld met letterlijk citaat uit een opgehaalde bron
+- Onbekend blijft null
 
 **Escalation rules**
 - Groepsstructuur onduidelijk → purchasingAuthority 'unknown'
@@ -224,19 +256,25 @@ Onderzoekt en verifieert individuele bedrijfsdossiers. Onbekend blijft onbekend.
 
 ## 09 — Lead Qualification Specialist (`lead_qualification_specialist`)
 
-Bepaalt of een organisatie commercieel geschikt is voor Cloud Life en welke dienst het beste instappunt is.
+Schrijft voor de eindlijst in batches een beknopte, op bewijs gebaseerde commerciële onderbouwing en toetst de aanbevolen dienst (Protect 365 / Purview Care of een assessment als instap).
+
+**Activation:** Alleen bij het afronden van een run, in batches, voor de geselecteerde prospects. De score zelf is deterministisch.
+
+**Tools (least privilege):** get_company_dossier
 
 **Responsibilities**
-- Microsoft-fit, omvang, securitycomplexiteit, operationele blootstelling, compliance, terugkerende potentie, NL-inkoopbevoegdheid, sectorfit beoordelen
-- Dienst aanbevelen met beknopte onderbouwing
+- Commerciële onderbouwing per prospect (batch van max. 20)
+- Dienst-aanbeveling toetsen tegen het dossier
+- Terugkerende potentie inschatten
 
 **Tasks (structured I/O)**
-- `qualify` — Commerciële kwalificatie. Tools: get_company_dossier. Max turns: 4.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 14.
+- `rationale_batch` — Commerciële onderbouwing (batch). Tier: standard. Tools: none. Max turns: 2. Skills injected: project.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: standard. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Score komt uit het transparante scoremodel; agent onderbouwt
-- Fit en bewijsbetrouwbaarheid gescheiden
+- Afwijking van regel-dienst alleen met reden
+- Geen nieuwe diensten introduceren
 
 **Escalation rules**
 - Afwijking van regel-gebaseerde dienst → reden verplicht
@@ -246,28 +284,31 @@ Bepaalt of een organisatie commercieel geschikt is voor Cloud Life en welke dien
 
 ## 10 — Quality Assurance Director (`quality_assurance_director`)
 
-Onafhankelijke kwaliteitscontrole met vetorecht. Opereert los van de agents die prospects genereren.
+Onafhankelijke kwaliteitscontrole met vetorecht, alleen op kandidaten die de lijst kunnen halen. Opereert los van de agents die prospects genereren.
+
+**Activation:** Alleen voor kandidaten die na deterministische scoring 'sterk' of 'uitzonderlijk' zijn
+
+**Tools (least privilege):** fetch_page, dns_lookup, lookup_company_db, get_company_dossier, web_search
 
 **Responsibilities**
 - Hallucinaties detecteren
-- Bestaan bedrijf, website, telefoonnummer verifiëren
-- Medewerkersschattingen en technologieclaims controleren
-- Irrelevante prospects, duplicaten (incl. moeder/dochter) en uitsluitingen controleren
+- Bestaan, website, telefoonnummer en medewerkersaantal verifiëren
+- Technologieclaims tegen bronnen toetsen
+- Irrelevante prospects, duplicaten en uitsluitingen controleren
 - Contactgeschiktheid en bewijs toetsen
-- Onvoldoende onderzochte prospects afwijzen
 
 **Tasks (structured I/O)**
-- `review` — Onafhankelijke QA-review. Tools: fetch_page, dns_lookup, lookup_company_db, get_company_dossier. Max turns: 12.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 14.
+- `review` — Onafhankelijke QA-review. Tier: strong. Tools: fetch_page, lookup_company_db. Max turns: 4. Skills injected: project.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: strong. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Bij twijfel: needs_research of rejected
-- Steekproefsgewijs bronnen opnieuw ophalen
-- Ziet geen verkoopargumenten van andere agents — alleen feiten en bronnen
+- Steekproefsgewijs één bron opnieuw ophalen
+- Ziet geen verkoopargumenten van andere agents
 
 **Escalation rules**
 - Vermoeden van hallucinatie → afwijzen
-- Contactbeperking → altijd afwijzen (niet overrulebaar via gewone goedkeuring)
+- Contactbeperking → altijd afwijzen
 
 **KPIs**
 - Afwijzingspercentage (`rejection_rate`)
@@ -275,22 +316,20 @@ Onafhankelijke kwaliteitscontrole met vetorecht. Opereert los van de agents die 
 
 ## 11 — Sales Operations Manager (`sales_operations_manager`)
 
-Beheert levering, exports, feedback, conversies en commerciële rapportage.
+Analyseert wekelijks de commerciële resultaten en formuleert aanbevelingen. Levering, exports, imports en retentie zijn deterministische processen onder zijn verantwoordelijkheid.
+
+**Activation:** 1× per week (maandag 06:00) wanneer er belresultaten zijn
+
+**Tools (least privilege):** get_commercial_performance, get_run_status, lookup_company_db, propose_recommendation
 
 **Responsibilities**
-- Wekelijkse levering
-- Excel/CSV-exports
-- Belbureau-workflow
-- Historie
-- Feedback-imports
-- Afspraak- en conversietracking
-- Reactivatieverzoeken
-- Rapportage
-- Retentie en verwijdering
+- Wekelijkse feedbackanalyse
+- Aanbevelingen met eerlijke bewijskracht
+- Bewaken van levering, imports, conversies en retentie (deterministisch)
 
 **Tasks (structured I/O)**
-- `analyze_feedback` — Commerciële feedbackanalyse. Tools: get_commercial_performance. Max turns: 4.
-- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, propose_recommendation. Max turns: 14.
+- `analyze_feedback` — Commerciële feedbackanalyse. Tier: standard. Tools: none. Max turns: 2. Skills injected: project.
+- `chat` — Direct gesprek met een gebruiker in Sales Army HQ. Tier: standard. Tools: web_search, fetch_page, lookup_company_db, get_company_dossier, get_commercial_performance, get_market_map, get_run_status, propose_recommendation. Max turns: 12. Skills injected: all.
 
 **Quality standards**
 - Export bevat alleen QA-goedgekeurde, contactgeschikte, door mens goedgekeurde prospects
@@ -303,9 +342,10 @@ Beheert levering, exports, feedback, conversies en commerciële rapportage.
 - Tijdige levering (`on_time_delivery`)
 - Feedbackdekking (`feedback_coverage`)
 
-## Orchestration
+## Orchestration (v2)
 
-See ARCHITECTURE.md → *Pipeline*. The Chief Sales Officer plans and approves; discovery agents run in parallel;
-each candidate then flows enrich → microsoft → signals → qualify → QA → eligibility as a checkpointed job. The QA Director
-receives a dossier without other agents' sales rationale and runs on the strong model tier. In HQ chat, the CSO can
-delegate to specialists (`delegate_to_agent`, depth 1) and start real research runs (`start_research_run`, analyst+ only).
+See ARCHITECTURE.md → *Pipeline*. The CSO plans once per run and reviews the list once; deterministic code plans
+harvest/scout/hunt work against the discovery-source database. Each candidate flows through a progressive funnel:
+free screening → one cheap extraction call → (only if needed) KvK lookup, gap-filling, Microsoft specialist, signals →
+deterministic score → QA (only exceptional/strong) → eligibility. Rationales for the final list are written in batches.
+In HQ chat the CSO can delegate (`delegate_to_agent`, depth 1) and start real runs (`start_research_run`, analyst+ only).

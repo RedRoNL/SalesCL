@@ -70,7 +70,7 @@ export function selectSubpages(home: string, links: PageLink[], max = 5): { url:
 
 const quoteAt = (text: string, idx: number, len: number, pad = 80) => text.slice(Math.max(0, idx - pad), Math.min(text.length, idx + len + pad)).replace(/\s+/g, " ").trim();
 
-const PHONE_RE = /(?:\+31|0031|\b0)[\s\-.]?(?:\(0\)[\s\-.]?)?[1-9](?:[\s\-.]?\d){8}\b/g;
+const PHONE_RE = /(?:\+31|0031|\b0)[\s\-./]{0,3}(?:\(0\)[\s\-./]{0,3})?[1-9](?:[\s\-./]{0,3}\d){8}\b/g;
 const KVK_RE = /(?:kvk|k\.v\.k\.|kamer van koophandel|chamber of commerce|coc|handelsregister)[^0-9]{0,30}(\d{8})\b/gi;
 const LEGAL_RE = /\b([A-Z][\w&'.-]*(?:\s+[A-Z&][\w&'.-]*){0,6})\s+(B\.\s?V\.?|BV|N\.\s?V\.?|NV)\b|\b(Stichting|Vereniging|Coöperatie|Cooperatie)\s+([A-Z][\w&'.-]*(?:\s+[A-Za-z&][\w&'.-]*){0,6})/g;
 const EMP_RE = /(?:ruim|meer dan|circa|ca\.?|ongeveer|bijna|zo'n|over|more than|approximately|around)?\s*(\d{1,3}(?:[.,]\d{3})+|\d{2,5})\s*\+?\s*(?:medewerkers|werknemers|collega'?s|fte|employees|mensen in dienst|professionals|people)\b/gi;

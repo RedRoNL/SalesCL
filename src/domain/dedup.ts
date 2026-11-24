@@ -63,7 +63,8 @@ export function findDuplicate(candidate: CompanyIdentity, existing: CompanyIdent
     if (cDomain && eDomain && cDomain === eDomain) return { matchedId: e.id, matchedName: e.name, reason: "domain", similarity: 1 };
     if (cDomain && (e.domains ?? []).some((d) => canonicalDomain(d) === cDomain)) return { matchedId: e.id, matchedName: e.name, reason: "domain", similarity: 0.99 };
     const cPhones = new Set([...(candidate.phones ?? [])]);
-    if (cPhones.size && (e.phones ?? []).some((p) => cPhones.has(p))) best = pick(best, { matchedId: e.id, matchedName: e.name, reason: "phone", similarity: 0.97 });
+    // A shared public switchboard number is strong identity evidence (same organisation or group).
+    if (cPhones.size && (e.phones ?? []).some((p) => cPhones.has(p))) return { matchedId: e.id, matchedName: e.name, reason: "phone", similarity: 0.98 };
 
     // Parent / subsidiary duplication: same group, or candidate's domain is the group's domain.
     if (candidate.groupId && e.groupId && candidate.groupId === e.groupId) {

@@ -29,7 +29,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <main className="flex-1 min-w-0 px-8 py-6">
         {missing.length > 0 && (
           <div className="mb-5 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-[12px] text-warn">
-            Niet geconfigureerd: {missing.join(", ")}. Functies die deze integraties vereisen zijn uitgeschakeld — zie Instellingen → Integraties.
+            Niet geconfigureerd: {missing.join(", ")}. Functies die deze integraties vereisen zijn uitgeschakeld — voltooi de Setup.
           </div>
         )}
         {children}

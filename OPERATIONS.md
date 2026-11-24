@@ -9,6 +9,14 @@
 | every 10 min | `run-watchdog`: re-queues runs without heartbeat for 30 min (crash/redeploy recovery) |
 | daily 02:30 | `retention-cleanup` |
 
+## First-time setup
+Open **Setup** (first login with `SETUP_TOKEN` if Entra is not configured yet) and complete the ten steps; each shows live status.
+Then run the three pilots (Setup → step 10) and review **Live pilots** before enabling the weekly schedule at full volume.
+
+## Discovery sources
+**Ontdekkingsbronnen** lists every source with its yield. Add sources (URL of a list page, or a search template with `{sector}`),
+stop poor ones, re-activate exhausted ones. The system adds sources itself (scouting) and rests exhausted ones automatically.
+
 ## Human steps each week
 1. **Weeklijsten → <week>**: read the management summary and QA report; approve/reject items; *Lijst goedkeuren*.
 2. Export Excel (tab 2 is the feedback template) → send to the calling agency.

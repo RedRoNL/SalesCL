@@ -34,6 +34,14 @@ they live in code, and the legal assumptions that must be validated by Cloud Lif
 - **SSRF protection** for fetching: http(s) only, no credentials/non-standard ports, private/loopback/link-local/metadata ranges blocked **after DNS resolution**, redirects followed manually with each hop re-validated.
 - **Respectful research**: robots.txt honoured; descriptive User-Agent; per-host delay; 401/403/429/CAPTCHA/challenge pages are reported, never bypassed; no logins; no paywalls; passive public DNS only — no scanning or vulnerability testing.
 
+## Secrets, setup and bootstrap (v2)
+- Integration secrets entered in the setup wizard are stored **AES-256-GCM encrypted** (random IV, auth tag); the UI is write-only (last 4 characters shown); values are never logged or audited. `SECRETS_ENCRYPTION_KEY` (32 bytes) is recommended; without it a key is HKDF-derived from `SESSION_SECRET`. Environment variables override stored values.
+- **First-admin bootstrap**: `SETUP_TOKEN` (≥24 chars) allows one local admin login to run the wizard before Entra ID works. Constant-time comparison, rate-limited (5 per 10 min per IP), audited, and permanently closed once an administrator signs in via Entra. Remove `SETUP_TOKEN` from the environment after setup.
+- Integration validation uses free endpoints where possible (Anthropic Models API, Firecrawl credit usage, KvK Zoeken, Entra OIDC metadata + client-credentials token).
+- **Entra tenant discovery** (optional, off by default): one GET to Microsoft's public OpenID metadata per domain. No traffic to the prospect, no user enumeration or authentication attempts. Enable only if Cloud Life considers this acceptable.
+- Firecrawl is only used to render JavaScript-only pages; 401/403/429/CAPTCHA responses are never retried through another provider.
+- Harvested company names, scouted source URLs and extracted fields are only accepted when the text literally occurs in a retrieved page.
+
 ## Privacy (GDPR / AVG)
 - **Data minimisation**: company-level data; contacts limited to professional role, and a name only when lawfully public in a professional context on a cited source. No private e-mail addresses, no personal mobile numbers (06-numbers are withheld from exports).
 - Lawful basis recorded per contact (`legitimate_interest_b2b_public_professional_role`) with source and retention date.

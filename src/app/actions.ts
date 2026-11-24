@@ -215,3 +215,25 @@ export async function setIndustryTierAction(industryId: number, fd: FormData) {
   await audit({ actorType: "user", actorId: u.sub, action: "industry.tier_updated", entityType: "industry", entityId: String(industryId), details: { tier } });
   revalidatePath("/settings");
 }
+
+export async function addSourceAction(fd: FormData) {
+  const u = await requireActionUser("admin");
+  const p = z.object({
+    name: z.string().min(2).max(200),
+    sourceType: z.string().min(2).max(40),
+    target: z.string().min(3).max(500),
+    industries: z.array(z.string()),
+  }).parse({ name: fd.get("name"), sourceType: fd.get("sourceType"), target: fd.get("target"), industries: fd.getAll("industries").map(String) });
+  const isUrl = /^https?:\/\//i.test(p.target);
+  if (isUrl) new URL(p.target);
+  await getDb().insert(schema.discoverySources).values({ kind: isUrl ? "page" : "query", sourceType: p.sourceType, name: p.name, url: isUrl ? p.target : null, query: isUrl ? null : p.target, industryCodes: p.industries, origin: "admin" }).onConflictDoNothing();
+  await audit({ actorType: "user", actorId: u.sub, action: "source.added", details: p });
+  revalidatePath("/sources");
+}
+
+export async function setSourceStatusAction(id: string, status: "active" | "retired" | "unverified") {
+  const u = await requireActionUser("admin");
+  await getDb().update(schema.discoverySources).set({ status, statusReason: `Handmatig: ${status}` }).where(eq(schema.discoverySources.id, z.string().uuid().parse(id)));
+  await audit({ actorType: "user", actorId: u.sub, action: "source.status", entityId: id, details: { status } });
+  revalidatePath("/sources");
+}

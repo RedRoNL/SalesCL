@@ -1,109 +1,65 @@
 # BUILD STATUS
 
-_Last updated: 2026-11-24. Persistent checklist — update when work is completed or discovered._
+_Last updated: 2026-11-24 (v2 review). Persistent checklist — update when work is completed or discovered._
 
 ## Overall
-**The application is built and its core functionality is implemented and tested end to end. It is NOT yet verified on
-live research**: no Anthropic/Firecrawl/KvK credentials were available, and the build environment's network blocks
-arbitrary websites. The live pilot (`npm run pilot`) is ready to run once those dependencies are in place.
-Until that pilot has passed, do not consider the definition of done met.
+The platform is built, reviewed (REVIEW.md) and tested end to end with synthetic data. **It has not yet performed live
+research**: the build environment had no Anthropic/KvK credentials and its network blocks ordinary websites. The three live pilots
+are prepared (Setup → step 10, or `npm run pilot`). Do not treat the system as production-proven until they pass.
 
-## Remaining dependencies (exact)
-| # | Dependency | Needed for | How |
+## Exact remaining steps (in order)
+| # | Step | Where | Outside the app? |
 |---|---|---|---|
-| 1 | `ANTHROPIC_API_KEY` | All 11 agents | Anthropic Console → API key → secret manager |
-| 2 | Outbound HTTPS from the worker to public websites + `api.anthropic.com` (+ DoH resolver) | Real research | Hosting network policy |
-| 3 | Search provider approval: `FIRECRAWL_API_KEY` + add `"firecrawl"` to approvedPaidProviders, **or** add `"anthropic_web_search"` | Discovery | Settings → Budget / Onderzoeksproviders |
-| 4 | Entra ID app registration (tenant, client ID/secret, roles) | Production sign-in | DEPLOYMENT.md §2 |
-| 5 | Optional: KvK API subscription (`KVK_API_KEY`) | Authoritative legal form → more prospects become contact-eligible | developers.kvk.nl |
-| 6 | Legal review of the contact-eligibility configuration | Compliance sign-off | SECURITY.md → Telemarketing |
-| 7 | Import of existing customers / opportunities / historical lists, and competitor domains | Correct exclusions | Settings → Bestaande relaties importeren / Uitsluitingen |
-| 8 | Live pilot run + review of `pilot-report.md` | Definition of done | `npm run pilot -- --industry food_production --target 5 --budget 10` |
+| 1 | Provision hosting (web + worker containers, PostgreSQL 16 with `pg_trgm`), set `DATABASE_URL`, `APP_URL`, `SESSION_SECRET`, `SECRETS_ENCRYPTION_KEY`, `SETUP_TOKEN`; allow outbound HTTPS to the public web | DEPLOYMENT.md §0–5 | Yes |
+| 2 | `npm run db:migrate`; start web and worker | DEPLOYMENT.md | Yes |
+| 3 | Create an Anthropic API key with a monthly spend limit | console.anthropic.com | Yes |
+| 4 | Register the Entra ID app (redirect URI, client secret, app roles) | Entra admin center | Yes (needs Entra admin) |
+| 5 | Optional: KvK API key (recommended) | developers.kvk.nl | Yes |
+| 6 | Sign in with `SETUP_TOKEN` → complete Setup steps 1–9 (keys, providers + approval, Entra, imports, exclusions, budget, schedule) | /setup | No |
+| 7 | Legal review of the contact-eligibility configuration | Settings → Contactgeschiktheid | Counsel |
+| 8 | Run the three pilots (≈€15 budget each), review /pilots metrics and the lists | Setup → 10, /pilots | No |
+| 9 | Calibrate: funnel thresholds, QA model tier, budgets from measured cost per qualified prospect | Settings | No |
+| 10 | Remove `SETUP_TOKEN`; enable the weekly schedule; click *Start eerste onderzoeksrun* or wait for Monday 08:00 | Setup | Yes / No |
 
-## Implementation checklist
-### Phase 1 — Discovery
-- [x] Inspected coreyhaines31/marketingskills, ComposioHQ/awesome-claude-skills, firecrawl/skills, firecrawl/firecrawl; searched skills.sh for alternatives
-- [x] Adoption evaluated per skill vs parent repo; security inspection (no scripts, no hidden instructions); licences recorded → SKILLS.md
-- [x] Dutch telemarketing law researched (soft opt-in abolished 1-7-2026; legal persons callable B2B) → eligibility engine
-- [x] Versions verified on npm (Next 16.4.6, React 19.3.1, @anthropic-ai/sdk 1.13.0, pg-boss 12.39, Drizzle 0.45.4, Zod 4.6.7, Tailwind 4.3.5, Vitest 5.1.1)
-- [x] Architecture & decisions → ARCHITECTURE.md
-
-### Phase 2 — Foundation
-- [x] Next.js app, Tailwind tokens, Dutch dark UI shell
-- [x] PostgreSQL schema (38 tables) + migration + idempotent seed (industries, seed exclusions, sector exclusions, scoring v1)
-- [x] Entra ID OIDC (PKCE, nonce, tenant check), signed sessions, RBAC (admin/analyst/viewer), dev login disabled in prod
-- [x] Security headers, CSRF/origin checks, rate limiting, secure errors, audit log
-- [x] Agent runtime (tool loop, allow-lists, Zod-validated output, cost accounting, budget checks)
-- [x] Community skills installed (pinned, with licences) + 4 Cloud Life project skills; Claude Code subagents generated
-- [x] Shared company intelligence (Cloud Life profile, ICP, security rules) injected into every agent
-
-### Phase 3 — Research & agents
-- [x] 11 agents with instructions, skills, tools, I/O schemas, quality standards, escalation rules, KPIs, task history
-- [x] Genuine orchestration: CSO strategy, parallel discovery, per-candidate checkpointed stages, CSO approval, delegation in chat
-- [x] Providers behind interfaces: Firecrawl, Claude web search, HTTP fetch (robots/SSRF-safe), DoH/system DNS, KvK
-- [x] Dedup (KvK, domain, parent group, alias, fuzzy), exclusions (company/domain/parent/legal entity/sector/name), suppressions
-- [x] Deterministic Microsoft evidence classification + validation of agent claims
-- [x] Transparent scoring (fit vs confidence), service recommendation
-- [x] Independent QA (deterministic checks + strong-model QA with filtered dossier; veto; documented admin override)
-- [x] Contact eligibility engine
-
-### Phase 4 — Application
-- [x] Dashboard (real metrics; estimated vs contracted revenue separated; costs; agent activity; run status)
-- [x] Sales Army HQ (roster, skills, tools, model, live status, performance, task log, communication, recommendations, chat with each agent or the whole army)
-- [x] Prospect database with all 14 requested filters; detailed intelligence profile
-- [x] Research control centre (start/pause/resume/cancel/retry; industries, size range, target, depth, budget; providers shown)
-- [x] Market intelligence (coverage with explicit uncertainty, performance by segment with CIs, signals, geography, discovery history, recommendations)
-- [x] Weekly lists (review, approve/reject items, QA report, exports, history) and feedback import wizard
-- [x] Settings (ICP, industry priorities, size bands, exclusions, suppressions, scoring versions, schedule, models, credentials status, providers, budgets, users, retention, skills, eligibility, learning, relationship import, audit log)
-
-### Phase 5 — Automation
-- [x] pg-boss worker; weekly cron (Mon 08:00 Europe/Amsterdam, configurable); watchdog; retention; learning job
-- [x] Retries with backoff, checkpoints, interrupted-run recovery, duplicate-run prevention, budget pause, failure surfacing
-- [x] Excel/CSV export (clean columns, formula-injection safe, feedback template tab), delivery history
-- [x] Feedback-driven optimisation (stats with Wilson CIs/p-values, recommendations, bounded auto-adjust, approvals)
-- [x] Cost tracking: per task/agent/provider/run; cost per company, per qualified prospect, per appointment; weekly/monthly budgets
-
-### Phase 6 — Validation
-- [x] 106 automated tests passing (see below)
-- [x] Production build passes; all pages rendered in a headless browser against a populated DB with zero console errors
-- [x] Real worker + UI path verified (UI → server action → pg-boss → worker → runtime → DB → UI)
-- [x] Security self-review; fixed: DNS/redirect SSRF, CSV formula injection, `javascript:` URL rendering
-- [ ] **Live research pilot on actual Dutch companies** — blocked by dependencies 1–3
-- [x] Deployment instructions (DEPLOYMENT.md, Dockerfile, docker-compose, CI)
+## v2 checklist (this review)
+- [x] Independent audit with fixes (REVIEW.md: 15 findings)
+- [x] Discovery-source database, seeds (≈20 associations/fairs + ≈35 templates), yield tracking, prioritisation + exploration, scouting, hunters' pools persisted
+- [x] Progressive funnel: free screening → one cheap extraction → dynamic specialists → deterministic score → QA → eligibility
+- [x] Target-reached reserve and reuse in the next run; shortfall round with growth/midmarket hunters
+- [x] DB-side identity matching (pg_trgm, identifiers incl. historical domains/phones/KvK/name variants)
+- [x] Microsoft intelligence v2 (gateways, SRV, DKIM selector2, msoid, optional tenant metadata, vacancy/website scan, per-technology confidence)
+- [x] Research cost comparison and three cost scenarios (COSTS.md, live estimate in Setup)
+- [x] Brave Search provider; Firecrawl only as JS-render fallback; Claude web search as default (no extra subscription)
+- [x] Agents reassessed: dynamic activation, per-task tier/effort/skills/max tokens, batch rationale, CSO strategic only
+- [x] Encrypted secrets store, setup wizard with live validation, worker heartbeat, first-admin bootstrap
+- [x] Historical imports (calling lists, customers, opportunities, rejected, opt-outs) with matching on messy data
+- [x] Three pilot presets with explicit budget approval and the requested measurements (/pilots, CLI report)
+- [x] Proxy-aware origin check; security review of new paths; `npm audit` 0 vulnerabilities
+- [ ] **Live pilots** — blocked by steps 1–6 above
 
 ## Test results (2026-11-24)
-`npm test` → **3 files, 106 tests, all passing** (~10 s), against PostgreSQL 16.
+`npm test` → **4 files, 130 tests, all passing** (~12 s) on PostgreSQL 16. Production build passes; all 14 pages render in a headless
+browser against a populated test database with zero console errors.
 
-| Area (brief §16) | Covered by |
+| Area | Covered by |
 |---|---|
-| Company discovery | pipeline E2E: discovery agents → candidates registered from fetched directory source |
-| Deduplication / domain normalisation / parent matching | `domain.test.ts` (dedup, canonicalDomain, parent group), E2E duplicate of existing customer |
-| Exclusion enforcement | seed exclusions incl. Visma ProActive, MSP category, sector, parent, delivered, customer; E2E |
-| Scoring calculations | weights, thresholds, confidence downgrade, hard failures, stale/unsourced signals |
-| Research source validation | facts citing non-existent sources → confidence 0; phone must appear on source; QA deterministic checks |
-| Microsoft evidence classification | DNS rules, claim validation (quote present / absent / no source) |
-| Contact eligibility | BV/stichting eligible; VOF/eenmanszaak restricted; unknown; suppressed; mobile withheld; re-verification |
-| Structured AI responses | every output schema converts to JSON Schema; invalid input/tasks rejected; Zod validation in runtime |
-| Excel export | header columns, CLSA IDs, no AI rationale, CSV delimiter/BOM, formula-injection neutralisation |
-| Feedback import | mapping suggestion, validation errors, duplicate detection, append-only history, appointment/opportunity, do-not-contact suppression |
-| Scheduled execution | pg-boss schedule `0 8 * * 1` tz Europe/Amsterdam registered; disabling removes it |
-| Failed task recovery | transient failures retried; failed → *retry failed tasks* re-opens and completes the run |
-| Agent orchestration | 8 distinct agents in one weekly run; CSO → specialist delegation in HQ; all 11 agents execute |
-| Authorisation | session tampering rejected, role hierarchy, settings validation |
-| Prompt-injection resistance | sanitiser/wrapper tests; injected page in E2E: warning surfaced, privileged tool call denied and audited, no run started |
+| Discovery engine | harvest → list page → outbound links; LLM list extraction with fabricated name rejected; scouted source must be retrieved; per-source yield; page sources harvested once per run; selection exploit/explore/re-harvest interval |
+| Funnel economics | Google-Workspace rejection with zero model calls; specialists activated only when needed (asserted per company); extraction on fast tier without tools; CSO never per company; batch rationale (1 call); target-reached reserve and reuse in next run |
+| Deterministic extraction | NL phone formats incl. `+31 (0)10 - …`, mobile excluded, KvK, legal form, employees, Microsoft mentions per page type, security vacancies, certifications, subpage selection |
+| Microsoft evidence | gateways, SRV, tenant metadata, per-technology confidence, mail never lifts the security stack, fabricated quotes dropped |
+| Identity & imports | phone/KvK/domain/historical-domain matching, email-derived domains, in-file duplicates, opt-out lists → suppressions, later discovery recognised as already delivered |
+| Secrets & bootstrap | AES-GCM round-trip + tamper detection, env precedence, write-only storage; setup-token rules; pilot budget approval |
+| All v1 areas | as before: dedup, exclusions, scoring, eligibility, export (formula-injection safe), feedback import, scheduling, recovery, authorisation, prompt-injection containment, HQ delegation, all 11 agents executable |
 
-The E2E tests use a **synthetic scripted model** and **synthetic providers** (fictitious `.example` companies). They prove
-the orchestration, persistence and controls — not the quality of live research.
+E2E tests use a **synthetic scripted model** and **synthetic providers**; they prove orchestration, persistence and controls, not live research quality.
 
 ## Known limitations
-- Live research quality (discovery yield, enrichment accuracy) is unverified until the pilot runs.
-- Without a KvK subscription, legal form must come from company websites (footer/colophon/terms); companies where it
-  can't be found stay `unknown` and are excluded from calling lists — this may cause shortfalls by design.
-- Seed exclusions are name-based; competitor domains should be added by an administrator.
-- In-process API rate limiter; use a WAF/edge limiter for multi-instance web deployments.
-- Market pool sizes are unknown until an administrator records sourced estimates (coverage shows "onzeker").
-- Model prices in `src/lib/costs.ts` must be maintained manually.
-- The chat UI polls every 2.5 s (no streaming of intermediate agent steps).
+- Funnel shares and costs in COSTS.md are assumptions until pilots measure them.
+- Without KvK, legal form comes from websites; companies where it isn't published stay `unknown` (not callable) → possible shortfalls.
+- Association member lists behind logins are not harvested (by design); JavaScript-only lists need the Firecrawl fallback.
+- Seed association URLs are homepages; the first harvest verifies whether a reachable member list exists.
+- In-process API rate limiter; use a WAF/edge limiter for multiple web instances.
+- Model prices in `src/lib/costs.ts` are maintained manually.
 
 ## Legal sources consulted (telemarketing)
 - https://www.ictrecht.nl/en/blog/end-of-the-soft-opt-in-telemarketing-from-1-july-2026-only-with-consent

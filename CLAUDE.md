@@ -11,6 +11,13 @@ BUILD_STATUS.md is the persistent implementation checklist — **update it** whe
 - `npm run dev` (web) and `npm run worker` (jobs/scheduler) — both are required for agents to run
 - `npx tsx scripts/generate-claude-agents.ts` after editing `src/agents/definitions.ts` (regenerates `.claude/agents/*` and AGENTS.md)
 
+## v2 architecture in one paragraph
+Discovery runs on `src/discovery` (source DB, harvest/scout/hunt). Each candidate goes through the funnel in
+`src/pipeline/stages.ts`: free screen → one cheap extraction → dynamic deep/MS/signals → deterministic score → QA → eligibility.
+Identity matching is DB-side (`src/pipeline/identity.ts`) — never load all companies into memory. Secrets come from
+`getSecret()` (env first, then encrypted DB). Keep model calls per company minimal; add new research as deterministic code first.
+Read REVIEW.md before changing the funnel and COSTS.md before adding providers.
+
 ## Layout
 `src/domain` pure logic (normalisation, dedup, exclusions, eligibility, Microsoft evidence, scoring, services, stats,
 untrusted-content handling) · `src/agents` runtime, definitions, schemas, tools, skills loader · `src/research`

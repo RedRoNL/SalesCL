@@ -7,6 +7,9 @@ Skills live in `.claude/skills/<name>/` (Claude Code project skills). They serve
    (truncated to ~4.5k chars) into that agent's system prompt as *methodology reference*, ranked **below** Cloud Life's
    own security rules. Per-agent assignment can be changed in **Settings → Skillbeheer per agent** (`agentSkills`).
 
+**v2 cost control:** skill text is only injected where it adds value — strategy, discovery and chat tasks get all assigned skills;
+QA and batch tasks only the short Cloud Life `sales-army-*` skills; high-volume extraction gets none (see AGENTS.md per task).
+
 Every third-party skill is pinned to the commit we inspected, carries its upstream `LICENSE`, and has an `ORIGIN.json`.
 No third-party skill was modified. Updating a skill = re-review + bump the pinned commit (see OPERATIONS.md).
 

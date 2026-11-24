@@ -29,7 +29,11 @@ export function apiRoute<P = Record<string, string>>(
       }
       if (req.method !== "GET" && req.method !== "HEAD") {
         const origin = req.headers.get("origin");
-        if (origin && new URL(origin).host !== req.headers.get("host")) throw new HttpError(403, "Cross-origin verzoek geweigerd");
+        if (origin) {
+          // Behind reverse proxies the Host header may differ: accept the configured public origin and forwarded host.
+          const allowed = new Set([req.headers.get("host"), req.headers.get("x-forwarded-host"), (() => { try { return new URL(process.env.APP_URL ?? "").host; } catch { return null; } })()].filter(Boolean));
+          if (!allowed.has(new URL(origin).host)) throw new HttpError(403, "Cross-origin verzoek geweigerd");
+        }
       }
       const user = await getCurrentUser();
       if (!user) throw new HttpError(401, "Niet ingelogd");

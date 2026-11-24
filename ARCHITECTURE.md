@@ -37,30 +37,36 @@ authorises and validates then calls `src/lib` / `src/pipeline`; **agent runtime*
 | D2 | **Agent runtime = Anthropic Messages API with our own bounded tool loop** (`@anthropic-ai/sdk` 1.13) rather than the Claude Agent SDK in production | The Agent SDK is Claude Code as a library (filesystem/Bash tools, its own permission model). Unattended production research needs: an exact per-task tool allow-list, every tool result wrapped as untrusted data, Zod-validated structured output before persistence, per-call cost accounting and budget enforcement, and resumable checkpoints in our DB. A thin explicit loop gives all of that with fewer moving parts. Claude Code subagents + skills (`.claude/`) are used for development/interactive work, generated from the same definitions. *Alternative considered:* Claude Managed Agents (Anthropic-hosted loop & sandbox, scheduled deployments) — viable later, but it moves research state and tool execution outside Cloud Life's database and is beta. |
 | D3 | PostgreSQL (Supabase-compatible) + Drizzle ORM + SQL migrations | Relational integrity for dedup/exclusions/history; works on Supabase, Azure Database for PostgreSQL or self-hosted. |
 | D4 | pg-boss 12 for jobs and cron | Durable queue in the same Postgres: retries with backoff, singleton keys (duplicate-run prevention), cron with time zones, no extra infrastructure. |
-| D5 | Interchangeable research providers (`SearchProvider`, `FetchProvider`, `DnsProvider`, `RegistryProvider`) | Firecrawl (hosted, paid) or Claude web search for discovery; direct HTTP fetch (free, robots.txt-respecting) or Firecrawl for pages; DoH or system DNS; optional KvK API. No paid provider is mandatory. |
+| D5 | Interchangeable research providers (`SearchProvider`, `FetchProvider`, `DnsProvider`, `RegistryProvider`) | Claude web search (default, no extra subscription), Brave or Firecrawl for search; direct HTTP fetch (free) with optional Firecrawl JS-render fallback; DoH or system DNS; optional KvK API. Only Anthropic is required (COSTS.md). |
+| D11 | Discovery-source database with yield-based prioritisation | The system gets better at finding hard-to-find companies by learning which sources produce unique *and* qualified companies. |
+| D12 | Deterministic-first funnel | Code does crawling, extraction, dedup, scoring; models only judge text and fill real gaps. |
 | D6 | Deterministic code decides scores, evidence classes, exclusions, eligibility, dedup | LLMs propose facts with sources; code validates (source exists, quote present in retrieved text, phone appears on source) and computes. Reproducible and analysable against outcomes. |
 | D7 | Model tiers (configurable): fast `claude-haiku-5-5` for high-volume evidence/signal work, standard `claude-sonnet-5-5` for discovery/enrichment, strong `claude-opus-5-5` for CSO, qualification, QA | Per brief: cheaper models for volume, stronger for reasoning and independent QA. Per-agent overrides in Settings. |
 | D8 | Own small UI component set instead of shadcn/ui | shadcn's CLI pulls component source from its registry at install time (network); our ~10 primitives in `src/components/ui.tsx` give the same control with no extra dependency. Easy to migrate to shadcn later. |
 | D9 | Custom OIDC (openid-client 6 + jose sessions) instead of Auth.js | Auth.js v5 is still beta for this Next major; a small audited OIDC code flow with PKCE, nonce, tenant check and signed 8-hour sessions is easier to reason about. |
 | D10 | Synthetic test world + scripted model | Lets 100+ tests exercise the real pipeline, DB and security controls without network or API keys; every fixture is fictitious (`.example`). |
 
-## Pipeline (12 stages)
+## Pipeline (v2 — progressive funnel; see REVIEW.md for why)
 
-| Stage | Where | Notes |
+| Stage | Where | Cost |
 |---|---|---|
-| 1 Industry selection | `orchestrateRun` → CSO `plan_week` | Gets performance (with CIs), market map, previous runs. Code strips excluded sectors and enforces user constraints. Strategy versioned in `strategies`. |
-| 2 Prospect pool discovery | Market Intelligence (`discover_pools`, new segments) / Hunters (`hunt`) — parallel (3) | Adaptive: previous queries per segment are passed in and must not be repeated; a 2nd pass runs if the candidate pool is short. |
-| 3 Preliminary filtering | `registerCandidate` | Name/domain exclusions & suppressions before any paid research. |
-| 4 Deduplication | `findDuplicate` | KvK → canonical domain → parent group → exact/alias → fuzzy (≥0.9, token-set aware). Reuses eligible existing records. |
-| 5 Enrichment | Company Research Specialist | Re-checks exclusions with business category, sector and group; early size/authority gates; fact reuse within `factReuseDays`. |
-| 6 Microsoft research | DNS classifier (code) + Microsoft Intelligence Specialist | Agent claims validated against stored sources. |
-| 7 Buying signals | Buying Signal Analyst | Every signal must reference a stored source. |
-| 8 Qualification | Scoring engine (code) + Lead Qualification Specialist | Agent supplies rationale and may override service with a reason. Reject / needs-research stop early to save cost. |
-| 9 QA | deterministic checks + QA Director (strong model, independent dossier) | Worst verdict wins; veto. |
-| 10 Contact eligibility | `evaluateEligibility` | Legal person + exportable public number required. |
-| 11 Ranking | `finalizeRun` | Fit, then confidence; 50–300 band capped unless shortfall. |
-| 12 Approval & export | CSO `approve_list` (summary) → **human** approval → `exportList` | Export re-checks QA, suppressions, eligibility; records deliveries. |
+| 1 Strategy | CSO `plan_week` (1 call/run): sectors, quotas, themes — informed by commercial results **and source yield** | strong model, 1× |
+| 2 Discovery planning | `orchestrateRun`: reserve candidates from earlier runs first; then deterministic selection of sources per sector from `discovery_sources` (exploit high-yield, explore new) → `run_work` units | free |
+| 3 Discovery work (parallel) | `harvest` (fetch list pages, follow member/exhibitor links + pagination, link extraction; cheap-model list extraction only if needed) · `scout` (Market Intelligence finds new sources — only for under-covered sectors) · `hunt` (enterprise: groups/annual reports; midmarket/growth: shortfall round) | mostly free / cheap |
+| 4 Registration & dedup | `registerCandidate` + `findExistingCompany` (KvK, domains incl. historical, phones, identifiers, pg_trgm names, groups); exclusions & suppressions | free |
+| 5 Screen | own-site crawl (home/contact/about/legal/careers), passive DNS, regex extraction (phone, KvK, legal form, employees, Microsoft mentions, security vacancies, certifications), phone/KvK dedup, early gates | free |
+| 6 Extract | Company Research `extract_profile`: one fast-tier call, no tools; every field quote-verified by code; exclusion/size/authority gates | ≈€0.003 |
+| 7 Deep (dynamic) | KvK lookup → potential score gate → gap-filling agent only for critical gaps → Microsoft specialist only if M365 evidence < strong; reserve if target reached | only when needed |
+| 8 Signals (dynamic) + score | Buying Signal Analyst only if preliminary fit ≥ threshold; deterministic final score, service and rationale | cheap |
+| 9 QA | deterministic checks + QA Director (strong) only for exceptional/strong | ≈€0.31 |
+| 10 Eligibility | deterministic contact eligibility | free |
+| 11 Shortfall round | if short of target and <70% of budget used: unused/explore sources, scouting, midmarket + growth hunters | bounded |
+| 12 Finalise | ranking, batch rationale (20/call), CSO review & summary, human approval, export | small |
 
-Each candidate is one `run-candidate` job; `run_candidates.stage` is the checkpoint, so retries and resumes continue
-from the last completed stage. Pause/cancel are checked before every stage. Budget exhaustion pauses the run.
-A watchdog re-queues runs without a heartbeat for 30 minutes (interrupted-run recovery).
+Candidates are checkpointed per stage (`run_candidates.stage`); discovery units in `run_work`. Pause/cancel are checked
+before every stage; budget exhaustion pauses the run; the watchdog re-queues runs without heartbeat for 30 minutes.
+
+## Secrets & configuration
+Integration keys are entered in **Setup** and stored AES-256-GCM-encrypted (`secrets` table, key `SECRETS_ENCRYPTION_KEY`
+or HKDF-derived from `SESSION_SECRET`); environment variables take precedence. Only platform values (DB, URLs, session/encryption
+keys, setup token) live outside the app.

@@ -151,6 +151,11 @@ export async function commitHistorical(importId: string, actor: string, opts: { 
   for (const r of rows) {
     const key = r.domain ?? r.kvk ?? normalizeCompanyName(r.name);
     let companyId = r.matchId && (r.confidence === "certain" || opts.acceptProbable !== false) ? r.matchId : byKey.get(key) ?? null;
+    if (!companyId) {
+      // Re-match at commit time: earlier rows of this same file may now exist (inconsistent duplicates within one list).
+      const m = await findExistingCompany({ name: r.name, domain: r.domain, kvkNumber: r.kvk, phone: r.phone, city: r.city });
+      if (m?.matchedId && (m.reason !== "fuzzy_name" || opts.acceptProbable !== false)) companyId = m.matchedId;
+    }
     if (companyId) {
       const [c] = await db.select().from(schema.companies).where(eq(schema.companies.id, companyId));
       if ((STRENGTH[rel] ?? 0) > (STRENGTH[c.relationship] ?? 0)) await db.update(schema.companies).set({ relationship: rel, contactEligibility: rel === "opted_out" ? "suppressed" : c.contactEligibility, updatedAt: new Date() }).where(eq(schema.companies.id, companyId));

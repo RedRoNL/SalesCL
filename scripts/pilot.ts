@@ -6,9 +6,12 @@
  * research targets. FIRECRAWL_API_KEY optional (else Claude web search + direct
  * HTTP fetch). Paid providers must be approved in Settings → Budget.
  *
- *   npm run pilot -- --industry food_production --target 5 --budget 10
- *   npm run pilot -- --company "Bedrijfsnaam" --website https://www.example.nl --budget 3
+ *   npm run pilot -- --preset manufacturing --budget 15 --approve-budget
+ *   npm run pilot -- --preset logistics --budget 15 --approve-budget
+ *   npm run pilot -- --preset operational --budget 15 --approve-budget
+ *   npm run pilot -- --company "Bedrijfsnaam" --website https://www.example.nl --budget 3 --approve-budget
  *   npm run pilot -- ... --approve-export --feedback ./feedback.csv
+ * The same pilots can be started from the UI: Setup → step 10 (recommended; metrics on /pilots).
  *
  * Writes pilot-report.md. Nothing is ever called, e-mailed or contacted.
  */
@@ -24,6 +27,8 @@ import { exportList } from "@/lib/exporter";
 import { createImportPreview, commitImport } from "@/lib/feedbackImport";
 import { commercialPerformance, generateRecommendations } from "@/lib/analytics";
 import { readFileSync } from "node:fs";
+import { startPilot, pilotMetrics, PILOT_PRESETS, type PilotKey } from "@/lib/pilots";
+import { modelAvailable } from "@/agents/model";
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -32,7 +37,11 @@ const arg = (name: string) => {
 const flag = (name: string) => process.argv.includes(`--${name}`);
 
 async function main() {
-  if (!env().ANTHROPIC_API_KEY) {
+  if (!flag("approve-budget")) {
+    console.error("Paid research requires explicit approval: add --approve-budget (and --budget <eur>).");
+    process.exit(2);
+  }
+  if (!env().ANTHROPIC_API_KEY && !(await modelAvailable())) {
     console.error("ANTHROPIC_API_KEY ontbreekt — de live pilot kan niet draaien. Zie BUILD_STATUS.md → Resterende afhankelijkheden.");
     process.exit(2);
   }
@@ -42,9 +51,11 @@ async function main() {
   setQueue(queue);
 
   const company = arg("company");
+  const preset = (arg("preset") ?? "manufacturing") as PilotKey;
+  if (!company && !(preset in PILOT_PRESETS)) throw new Error(`Unknown preset; use one of ${Object.keys(PILOT_PRESETS).join(", ")}`);
   const run = company
     ? await createRun("company", { target: 1, companyName: company, companyWebsite: arg("website") }, "system:pilot", budget)
-    : await createRun("sector", { target: Number(arg("target") ?? 5), industries: [arg("industry") ?? "food_production"] }, "system:pilot", budget);
+    : await startPilot(preset, budget, true, "system:pilot-cli");
   console.log(`Pilot-run ${run.runId} gestart (budget €${budget}) — dit voert echte research uit…`);
   const started = Date.now();
   await queue.drain();
@@ -110,7 +121,9 @@ ${agents.map((a) => `- ${a.agent_id}: ${a.n} taken, €${a.cost.toFixed(3)}`).jo
 ## Lijst
 ${list ? `${list.isoWeek} · tekort ${list.shortfall}\n\n${list.managementSummary ?? ""}` : "Geen lijst aangemaakt."}
 `;
-  writeFileSync("pilot-report.md", report);
+  const m = await pilotMetrics(run.runId);
+  const full = `${report}\n## Pilot measurements\n\n\`\`\`json\n${JSON.stringify(m, null, 2)}\n\`\`\`\n`;
+  writeFileSync("pilot-report.md", full);
   console.log(report);
   process.exit(0);
 }

@@ -27,6 +27,10 @@ research strategy can improve.
 - **Security & compliance**: Entra ID SSO, RBAC, audit log, prompt-injection containment, SSRF-safe fetching,
   GDPR minimisation/retention/erasure, Dutch telemarketing eligibility engine. See SECURITY.md.
 
+## v2 (engineering & commercial review)
+See **REVIEW.md** (findings, fixes, removals), **COSTS.md** (provider comparison, scenarios: realistic ≈ €67/week for 100 qualified),
+the **Setup wizard** (/setup), the **discovery-source database** (/sources) and **live pilots** (/pilots).
+
 ## Quick start (development)
 ```bash
 npm ci
@@ -46,14 +50,14 @@ npm run worker     # job runner + weekly scheduler (separate terminal)
 
 ## Tests
 ```bash
-npm test           # 106 tests: domain logic, providers, security, full pipeline E2E on Postgres (synthetic)
+npm test           # 130 tests: domain logic, providers, security, discovery, funnel, imports, pilots — E2E on Postgres (synthetic)
 ```
 Tests need a PostgreSQL database whose name ends in `_test` (`TEST_DATABASE_URL`). All fixtures are synthetic
 (`.example` domains) and are never presented as research.
 
 ## Live pilot
 ```bash
-npm run pilot -- --industry food_production --target 5 --budget 10
+npm run pilot -- --preset manufacturing --budget 15 --approve-budget
 ```
 Writes `pilot-report.md` with the 11 verification criteria. Requires API keys; see BUILD_STATUS.md.
 

@@ -63,20 +63,21 @@ const md: string[] = [
   "before every model call. Shared knowledge (Cloud Life profile, ICP, security rules) and the agent's assigned skills are",
   "injected into every system prompt. External content always arrives wrapped as `<untrusted_content>`.",
   "",
-  "| # | Agent | Model tier | Skills | Tools |",
+  "| # | Agent | Default tier | Activated | Skills |",
   "|---|---|---|---|---|",
-  ...AGENT_LIST.map((a) => `| ${String(a.number).padStart(2, "0")} | ${a.name} | ${a.modelTier} | ${a.skills.join(", ")} | ${a.tools.join(", ")} |`),
+  ...AGENT_LIST.map((a) => `| ${String(a.number).padStart(2, "0")} | ${a.name} | ${a.modelTier} | ${a.activation} | ${a.skills.join(", ")} |`),
   "",
 ];
 for (const a of AGENT_LIST) {
-  md.push(`## ${String(a.number).padStart(2, "0")} — ${a.name} (\`${a.id}\`)`, "", a.mission, "", "**Responsibilities**", ...a.responsibilities.map((r) => `- ${r}`), "",
-    "**Tasks (structured I/O)**", ...Object.values(a.tasks).map((t) => `- \`${t.type}\` — ${t.description}. Tools: ${t.tools.join(", ") || "none"}. Max turns: ${t.maxTurns ?? 12}.`), "",
+  md.push(`## ${String(a.number).padStart(2, "0")} — ${a.name} (\`${a.id}\`)`, "", a.mission, "", `**Activation:** ${a.activation}`, "", `**Tools (least privilege):** ${a.tools.join(", ")}`, "", "**Responsibilities**", ...a.responsibilities.map((r) => `- ${r}`), "",
+    "**Tasks (structured I/O)**", ...Object.values(a.tasks).map((t) => `- \`${t.type}\` — ${t.description}. Tier: ${t.modelTier ?? a.modelTier}. Tools: ${t.tools.join(", ") || "none"}. Max turns: ${t.maxTurns ?? 12}. Skills injected: ${t.skills ?? "project"}.`), "",
     "**Quality standards**", ...a.qualityStandards.map((r) => `- ${r}`), "", "**Escalation rules**", ...a.escalationRules.map((r) => `- ${r}`), "",
     "**KPIs**", ...a.kpis.map((k) => `- ${k.label} (\`${k.key}\`)`), "");
 }
-md.push("## Orchestration", "", "See ARCHITECTURE.md → *Pipeline*. The Chief Sales Officer plans and approves; discovery agents run in parallel;",
-  "each candidate then flows enrich → microsoft → signals → qualify → QA → eligibility as a checkpointed job. The QA Director",
-  "receives a dossier without other agents' sales rationale and runs on the strong model tier. In HQ chat, the CSO can",
-  "delegate to specialists (`delegate_to_agent`, depth 1) and start real research runs (`start_research_run`, analyst+ only).", "");
+md.push("## Orchestration (v2)", "", "See ARCHITECTURE.md → *Pipeline*. The CSO plans once per run and reviews the list once; deterministic code plans",
+  "harvest/scout/hunt work against the discovery-source database. Each candidate flows through a progressive funnel:",
+  "free screening → one cheap extraction call → (only if needed) KvK lookup, gap-filling, Microsoft specialist, signals →",
+  "deterministic score → QA (only exceptional/strong) → eligibility. Rationales for the final list are written in batches.",
+  "In HQ chat the CSO can delegate (`delegate_to_agent`, depth 1) and start real runs (`start_research_run`, analyst+ only).", "");
 writeFileSync("AGENTS.md", md.join("\n"));
 console.log(`Generated ${AGENT_LIST.length} subagents in .claude/agents/ and AGENTS.md`);

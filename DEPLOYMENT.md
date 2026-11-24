@@ -9,6 +9,17 @@ Two processes share one PostgreSQL database:
 
 The weekly run is fired by the worker's pg-boss cron — **no browser tab or interactive Claude Code session is involved.**
 
+## 0. Recommended hosting architecture
+| Component | Recommendation | Why |
+|---|---|---|
+| Web (Next.js) | Container on **Azure Container Apps** (West Europe) — or any EU container platform | Microsoft-aligned for a Microsoft-security company; Entra ID native; scales to zero is NOT needed |
+| Worker | Second Container App from the same image, `npm run worker`, **min replicas 1** | Must run continuously for the weekly schedule; one replica is enough (raise `WORKER_CONCURRENCY` first) |
+| Database | **Azure Database for PostgreSQL – Flexible Server** (Burstable B1ms/B2s, EU), PITR backups; or Supabase EU (use the *session*/direct connection, not the transaction pooler, for the worker) | pg-boss, pg_trgm, relational integrity |
+| Secrets | Azure Key Vault → environment variables for platform values; integration keys via the Setup wizard | Least exposure |
+| Egress | Outbound HTTPS to api.anthropic.com, the DoH resolver, research targets (public web), optionally api.kvk.nl / api.search.brave.com / api.firecrawl.dev | Research needs the public web |
+| Observability | Container logs → Log Analytics; alert on `run.failed`, worker heartbeat older than 3 min | Unattended operation |
+Indicative cost: €40–120/month depending on sizes (verify in the Azure calculator).
+
 ## 1. Prerequisites
 - Node.js ≥ 22, PostgreSQL 16 (Supabase, Azure Database for PostgreSQL Flexible Server, or self-hosted).
 - Outbound HTTPS from the worker to: `api.anthropic.com`, `api.firecrawl.dev` (if used), `api.kvk.nl` (if used),
@@ -25,8 +36,7 @@ The weekly run is fired by the worker's pg-boss cron — **no browser tab or int
 6. Recommended: Conditional Access (MFA, compliant device) on the enterprise application.
 
 ## 3. Configure environment
-Copy `.env.example`; at minimum set `DATABASE_URL`, `APP_URL`, `SESSION_SECRET` (`openssl rand -hex 32`), Entra values,
-`ANTHROPIC_API_KEY`. Optional: `FIRECRAWL_API_KEY`, `KVK_API_KEY`.
+Platform values only: `DATABASE_URL`, `APP_URL`, `SESSION_SECRET` and `SECRETS_ENCRYPTION_KEY` (each `openssl rand -hex 32`), and a temporary `SETUP_TOKEN` (≥24 chars). Everything else (Claude key, providers, KvK, Entra, budgets, schedule, imports) is configured in the **Setup wizard**; environment variables for those keys still work and take precedence.
 
 ## 4. Database
 ```bash
@@ -48,16 +58,13 @@ docker compose up -d --build
 Build the image from `Dockerfile` once; run it twice — default command for **web**, `npm run worker` for **worker**;
 run `npm run db:migrate` as a release/one-off job before each deploy.
 
-## 6. First-time setup in the UI (administrator)
-1. **Instellingen → Integraties**: confirm keys are detected.
-2. **Instellingen → Budget**: set weekly/monthly limits; add `"firecrawl"` / `"kvk"` / `"anthropic_web_search"` to
-   `approvedPaidProviders` only after approving those subscriptions.
-3. **Instellingen → Onderzoeksproviders**: choose search (`firecrawl` or `anthropic_web_search`) and fetch provider.
-4. **Instellingen → Bestaande relaties importeren**: upload current customers, active opportunities and historical
-   prospect lists so they are never delivered as new prospects.
-5. **Instellingen → Uitsluitingen**: add competitor domains (seed exclusions are name-based).
-6. **Instellingen → Contactgeschiktheid**: have legal counsel confirm the eligible legal forms.
-7. Run `npm run pilot -- --industry food_production --target 5 --budget 10` and review `pilot-report.md`.
+## 6. First-time setup in the UI (administrator) — now the Setup wizard
+Sign in at /login with `SETUP_TOKEN`, open **Setup** and follow steps 1–10:
+1 platform & worker status · 2 Claude API key (validated free) · 3 search/fetch providers + explicit approval of paid providers +
+connectivity test · 4 optional KvK key · 5 Entra ID (tenant, client, secret, groups; validated) · 6 import customers, opportunities,
+previous calling lists, rejected companies, opt-outs · 7 competitor domains · 8 budgets (with cost estimate) · 9 weekly schedule ·
+10 the three live pilots and the first full run (each requires ticking an explicit budget approval).
+After an administrator has signed in through Entra ID, remove `SETUP_TOKEN` from the environment.
 
 ## 7. Production hardening checklist
 - HTTPS only; set `APP_URL` to the public HTTPS origin (cookies become `Secure`).

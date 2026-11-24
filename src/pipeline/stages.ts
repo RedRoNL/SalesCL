@@ -35,6 +35,15 @@ import { getQueue, JOBS } from "./queue";
 export const STAGES = ["discovered", "screen", "extract", "deep", "signals", "qa", "eligibility", "done"] as const;
 type Stage = (typeof STAGES)[number];
 
+export interface SizeBounds {
+  min: number;
+  max: number;
+}
+/** Run-level size bounds (pilots: 300–5,000) or the ICP defaults (hard ceiling = 2× ICP max). */
+export function sizeBounds(params: { minEmployees?: number; maxEmployees?: number }, settings: Settings): SizeBounds {
+  return { min: params.minEmployees ?? settings.icp.minEmployees, max: params.maxEmployees ?? settings.icp.maxEmployees * 2 };
+}
+
 export class StopCandidate extends Error {
   constructor(public outcome: string, public companyStatus: "rejected" | "excluded" | "needs_research" | "qualified" | "candidate") {
     super(outcome);
@@ -108,7 +117,7 @@ async function resolveWebsite(name: string, research: ResearchService): Promise<
   return null;
 }
 
-async function stageScreen(runId: string, companyId: string, research: ResearchService, settings: Settings) {
+async function stageScreen(runId: string, companyId: string, research: ResearchService, settings: Settings, bounds: SizeBounds) {
   const db = getDb();
   let c = await getCompany(companyId);
   const fresh = c.researchTier && c.lastResearchedAt && Date.now() - c.lastResearchedAt.getTime() < settings.research.factReuseDays * 86400000;
@@ -184,12 +193,12 @@ async function stageScreen(runId: string, companyId: string, research: ResearchS
   const summary = summarizeEvidence(dnsItems);
   if (summary.microsoft_365 === "contradicted" && !det.msMentions.some((m) => m.classification === "strongly_indicated")) throw new StopCandidate("Geen Microsoft-omgeving: mail via Google Workspace en geen Microsoft-vermeldingen", "rejected");
   const est = det.bestEmployees?.value ?? null;
-  if (est != null && est < settings.icp.minEmployees && det.bestEmployees!.pageKind !== "news") throw new StopCandidate(`Te klein (${est} medewerkers volgens eigen website)`, "rejected");
+  if (est != null && est < Math.min(bounds.min, settings.icp.minEmployees) && det.bestEmployees!.pageKind !== "news") throw new StopCandidate(`Te klein (${est} medewerkers volgens eigen website)`, "rejected");
   return { pages, det };
 }
 
 // ───────────────────────────── stage: extract (one cheap call) ─────────────────────────────
-async function stageExtract(runId: string, companyId: string, research: ResearchService, settings: Settings, screen: { pages: ExtractPage[] | null; det: DeterministicProfile | null }) {
+async function stageExtract(runId: string, companyId: string, research: ResearchService, settings: Settings, screen: { pages: ExtractPage[] | null; det: DeterministicProfile | null }, bounds: SizeBounds) {
   const db = getDb();
   const c = await getCompany(companyId);
   if (!screen.pages && (c.researchTier === "extracted" || c.researchTier === "deep")) return; // reused, still fresh
@@ -257,7 +266,7 @@ async function stageExtract(runId: string, companyId: string, research: Research
     if (dup && dup.reason !== "fuzzy_name") throw new StopCandidate(`Duplicaat (${dup.reason}) van ${dup.matchedName}`, "rejected");
   }
   const est = employeeEstimate(after);
-  if (est != null && (est < settings.icp.minEmployees || est > settings.icp.maxEmployees * 2)) throw new StopCandidate(`Buiten ICP-omvang (${est} medewerkers)`, "rejected");
+  if (est != null && (est < bounds.min || est > bounds.max)) throw new StopCandidate(`Buiten omvang voor deze run (${est} medewerkers; ${bounds.min}–${bounds.max})`, "rejected");
   if (authority === "abroad_central") throw new StopCandidate("IT-inkoop gecentraliseerd in het buitenland", "rejected");
 }
 
@@ -307,7 +316,7 @@ export async function scoringInputFromDb(companyId: string) {
 }
 
 // ───────────────────────────── stage: deep (dynamic) ─────────────────────────────
-async function stageDeep(runId: string, companyId: string, research: ResearchService, settings: Settings) {
+async function stageDeep(runId: string, companyId: string, research: ResearchService, settings: Settings, bounds: SizeBounds) {
   const db = getDb();
   let c = await getCompany(companyId);
   // 1. Licensed register first: cheapest authoritative source for legal form and headcount.
@@ -362,7 +371,7 @@ async function stageDeep(runId: string, companyId: string, research: ResearchSer
     if (g.purchasingAuthority === "abroad_central" && ok(g.purchasingAuthorityQuote)) throw new StopCandidate("IT-inkoop gecentraliseerd in het buitenland", "rejected");
     c = await getCompany(companyId);
     const est = employeeEstimate(c);
-    if (est != null && (est < settings.icp.minEmployees || est > settings.icp.maxEmployees * 2)) throw new StopCandidate(`Buiten ICP-omvang (${est} medewerkers)`, "rejected");
+    if (est != null && (est < bounds.min || est > bounds.max)) throw new StopCandidate(`Buiten omvang voor deze run (${est} medewerkers; ${bounds.min}–${bounds.max})`, "rejected");
   }
 
   // 3. Microsoft specialist only when screening found no strong Microsoft 365 / Exchange Online evidence.
@@ -484,6 +493,7 @@ export async function processCandidate(runId: string, companyId: string): Promis
   let screen: { pages: ExtractPage[] | null; det: DeterministicProfile | null } = { pages: null, det: null };
   const setStage = (s: Stage) => db.update(schema.runCandidates).set({ stage: s, updatedAt: new Date() }).where(eq(schema.runCandidates.id, rc.id));
   const target = Math.ceil(run.targetProspects * settings.research.targetBufferFactor);
+  const bounds = sizeBounds(run.params as { minEmployees?: number; maxEmployees?: number }, settings);
   try {
     for (let i = stageIdx + 1; i < STAGES.length; i++) {
       const stage = STAGES[i];
@@ -497,11 +507,11 @@ export async function processCandidate(runId: string, companyId: string): Promis
         throw new StopCandidate("Reserve: weekdoel bereikt vóór verdiepend onderzoek (wordt in een volgende run hergebruikt)", "candidate");
       }
       if (stage === "screen") {
-        screen = await stageScreen(runId, companyId, research, settings);
+        screen = await stageScreen(runId, companyId, research, settings, bounds);
       } else if (stage === "extract") {
         if (!(await modelAvailable())) throw new AgentError("ANTHROPIC_API_KEY ontbreekt", "", false);
-        await stageExtract(runId, companyId, research, settings, screen);
-      } else if (stage === "deep") await stageDeep(runId, companyId, research, settings);
+        await stageExtract(runId, companyId, research, settings, screen, bounds);
+      } else if (stage === "deep") await stageDeep(runId, companyId, research, settings, bounds);
       else if (stage === "signals") {
         await stageSignals(runId, companyId, research, settings);
         const score = await finalScore(runId, companyId);

@@ -18,6 +18,9 @@ const EnvSchema = z.object({
   AUTH_DEV_LOGIN: z.enum(["true", "false"]).default("false"),
   /** Comma-separated e-mails that are always admin (bootstrap). */
   INITIAL_ADMIN_EMAILS: z.string().default(""),
+  /** One-time token for the first administrator (setup wizard) before Entra ID is configured. */
+  SETUP_TOKEN: z.string().optional(),
+  SECRETS_ENCRYPTION_KEY: z.string().optional(),
   // AI
   ANTHROPIC_API_KEY: z.string().optional(),
   // Research providers

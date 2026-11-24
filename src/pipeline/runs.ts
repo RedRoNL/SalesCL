@@ -6,7 +6,7 @@ import { isoWeek } from "@/domain/normalize";
 import { getQueue, JOBS } from "./queue";
 import type { StartRunParams } from "@/agents/tools";
 
-export type RunKind = "weekly" | "manual" | "sector" | "company";
+export type RunKind = "weekly" | "manual" | "sector" | "company" | "pilot";
 export interface RunParams {
   target: number;
   industries?: string[];
@@ -17,6 +17,7 @@ export interface RunParams {
   depth?: "light" | "standard" | "deep";
   instructions?: string;
   providers?: { search?: string; fetch?: string };
+  pilot?: string;
 }
 
 /**

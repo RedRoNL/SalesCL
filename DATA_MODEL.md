@@ -54,3 +54,15 @@ approval status) · `provider_usage` (provider, operation, units, cost, cached, 
 KvK number → canonical registrable domain (subdomains/protocols stripped, multi-part TLDs handled) → parent group
 (group id, group domain, group name) → exact normalised name or alias → fuzzy name (Levenshtein + token-set ≥ 0.9, not
 when both have different known domains, not for names ≤ 4 characters).
+
+## v2 additions
+| Table | Purpose |
+|---|---|
+| `discovery_sources` | Persistent source database: page (list URL) or query (search template with `{sector}`), type, sectors, status (unverified/active/exhausted/blocked/retired), origin (seed/agent/admin), harvest counters, re-harvest interval. |
+| `source_companies` | Which source surfaced which company, whether it was **new** at that time, and the role (member, exhibitor, customer, employer…). Source yield (unique, qualified, delivered, appointments) is computed from here. |
+| `company_identifiers` | Normalised domains (incl. historical), phones, KvK numbers and name variants for deduplication. |
+| `run_work` | Discovery work units per run (harvest/scout/hunt, round 1 or shortfall round 2). |
+| `secrets` | Encrypted integration secrets (AES-256-GCM), last 4 chars, validation status. |
+| `companies.research_tier`, `screen_score` | Funnel depth reached and prescreen potential (used for reserve reuse). |
+| `run_candidates.discovery_source_id`, `priority` | Source attribution and queue priority. |
+| `feedback_imports.kind` | feedback / historical_list / customers / opportunities / rejected / optouts. |
