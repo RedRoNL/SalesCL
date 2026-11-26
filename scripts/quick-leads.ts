@@ -22,11 +22,21 @@ import { canonicalDomain } from "@/domain/normalize";
 try { process.loadEnvFile(".env.local"); } catch { /* optional */ }
 
 const file = process.argv[2];
-if (!file) throw new Error("Gebruik: quick-leads.ts <kandidaten.tsv>");
-const rows = readFileSync(file, "utf8").trim().split("\n").slice(1).map((l) => {
+if (!file) throw new Error("Gebruik: quick-leads.ts <kandidaten.tsv> [eerdere-kandidaten.tsv …]");
+const parse = (f: string) => readFileSync(f, "utf8").trim().split("\n").slice(1).map((l) => {
   const [name, domain, sector, city, fte] = l.split("\t");
-  return { name, domain, sector, city, fte: Number(fte) || null };
+  return { name, domain: domain.trim().toLowerCase(), sector, city, fte: Number(fte) || null };
 });
+// Earlier weeks' lists (delivered) are passed as extra arguments: those domains are never offered again.
+const previous = new Set(process.argv.slice(3).flatMap((f) => parse(f).map((r) => r.domain.replace(/^www\./, ""))));
+const seen = new Set<string>();
+const rows = parse(file).filter((r) => {
+  const d = r.domain.replace(/^www\./, "");
+  if (previous.has(d) || seen.has(d)) return false;
+  seen.add(d);
+  return true;
+});
+console.error(`${rows.length} nieuwe kandidaten (${previous.size} domeinen uit eerdere weken overgeslagen)`);
 
 const http = new HttpFetchProvider("CloudLifeSalesArmyResearchBot/1.0 (+https://www.cloudlife.nl)");
 const dns = new DohDnsProvider(process.env.DOH_RESOLVER_URL || "https://cloudflare-dns.com/dns-query");
@@ -85,7 +95,7 @@ async function main() {
   const order = ["lead (M365 bevestigd)", "lead (M365, website niet uitgelezen)", "lead (M365 niet aangetoond)", "geen M365 (andere mailprovider)", "website niet bereikbaar", "al geleverd", "uitgesloten"];
   results.sort((a, b) => order.indexOf(a.status as string) - order.indexOf(b.status as string) || String(a.sector).localeCompare(String(b.sector)) || String(a.name).localeCompare(String(b.name)));
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Leads week 48");
+  const ws = wb.addWorksheet(`Leads ${file.match(/week\d+/)?.[0] ?? ""}`.trim());
   ws.columns = [
     { header: "Status", key: "status", width: 26 }, { header: "Bedrijf", key: "name", width: 32 }, { header: "Sector", key: "sector", width: 14 },
     { header: "Plaats", key: "city", width: 20 }, { header: "Website", key: "website", width: 36 },
